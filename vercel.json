@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.py"
+    }
+  ],
+  "env": {
+    "KALA_API_BASE": "@kala_api_base",
+    "KALA_AUTH_EMAIL": "@kala_auth_email",
+    "KALA_AUTH_PASSWORD": "@kala_auth_password",
+    "DATABASE_URL": "@database_url",
+    "ANTHROPIC_API_KEY": "@anthropic_api_key",
+    "CLAUDE_MODEL": "@claude_model",
+    "API_KEY_SECRET": "@api_key_secret"
+  }
+}
