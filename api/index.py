@@ -28,6 +28,14 @@ logger.info("STARTING KALA CREDIT VALIDATION API")
 logger.info("=" * 60)
 
 # =============================================================================
+# IMPORT SYSTEM PROMPT FROM SEPARATE FILE
+# =============================================================================
+
+from api.prompt import SYSTEM_PROMPT, PROMPT_VERSION
+
+logger.info(f"Loaded prompt version: {PROMPT_VERSION}")
+
+# =============================================================================
 # CONFIGURATION
 # =============================================================================
 
@@ -43,9 +51,9 @@ logger.info("ENV CHECK:")
 logger.info(f"  KALA_AUTH_EMAIL: {'SET' if KALA_AUTH_EMAIL else 'NOT SET'}")
 logger.info(f"  DATABASE_URL: {'SET' if DATABASE_URL else 'NOT SET'}")
 logger.info(f"  ANTHROPIC_API_KEY: {'SET' if ANTHROPIC_API_KEY else 'NOT SET'}")
+logger.info(f"  CLAUDE_MODEL: {CLAUDE_MODEL}")
 
 MAX_CLAUDE_RETRIES = 2
-PROMPT_VERSION = "1.0.1"
 
 # =============================================================================
 # IMPORTS
@@ -147,6 +155,7 @@ class ValidationResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+    prompt_version: str
     database: str
     database_url_format: str
     claude_api: str
@@ -411,110 +420,6 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
 
 
 # =============================================================================
-# SYSTEM PROMPT (CORREGIDO - SARLAFT)
-# =============================================================================
-
-SYSTEM_PROMPT = """# ROL
-Eres analista de crédito de KALA. Evalúas solicitudes de libranza para pensionados.
-
-# REGLA FUNDAMENTAL
-NO hagas inferencias sobre atributos NO regulados. Solo rechaza por criterios EXPLÍCITOS.
-
-# INTERPRETACIÓN DE SARLAFT
-- sarlaftCompliance = true → Cliente SÍ ESTÁ en listas restrictivas → RECHAZAR
-- sarlaftCompliance = false → Cliente NO está en listas restrictivas → OK, puede continuar
-- sarlaftCompliance = null → No se pudo validar → Requiere validación manual
-
-# CLIENTES INACEPTABLES (Rechazo inmediato si cumple CUALQUIERA)
-- Ingreso < 1 SMMLV (~$1,300,000)
-- sarlaftCompliance = true (está en listas restrictivas)
-- Figuran como fallecidos en buró
-- 5+ procesos ejecutivos activos como DEMANDADO (últimos 60 meses)
-- Procesos penales activos con condena
-- >1 embargo en desprendible de nómina
-
-# ELEGIBILIDAD
-- Edad: 18-90 años
-- Monto máximo: $120M (hasta 80 años), $20M (81-90 años)
-- Ingreso mínimo: 1 SMMLV
-
-# EMBARGOS
-- >1 embargo en desprendible = NO sujeto de crédito
-- CASUR/CREMIL: castigo 10% sobre valor embargo
-
-# CAPACIDAD DE PAGO (Ley 1527)
-COLPENSIONES y otras (excepto CASUR/CREMIL):
-  Capacidad = (Pensión Bruta / 2) - Descuentos de ley - Descuentos libranza - Resguardo($2,500)
-
-CASUR:
-  Capacidad = (Pensión Bruta - 4%CSREJECUT - 1%CASURAUTOM) / 2 - Otros descuentos - Resguardo($6,000)
-
-CREMIL:
-  Capacidad = (Pensión Bruta / 2) - Todos los descuentos - Resguardo($6,000)
-
-# PROCESOS JUDICIALES
-- Solo cuentan procesos donde cliente sea DEMANDADO (roleDefendant = true)
-- Solo últimos 60 meses con movimiento
-- Excluir procesos tipo Declarativo
-- 5+ procesos ejecutivos como demandado = INACEPTABLE
-
-# FORMATO RESPUESTA JSON
-```json
-{
-  "txn": "string",
-  "solicitante": {
-    "nombre": "string",
-    "cc": "string", 
-    "pagaduria": "string",
-    "pagaduriaType": "COLPENSIONES|FOPEP|CASUR|CREMIL|OTRAS",
-    "pensionBruta": 0,
-    "pensionNeta": 0
-  },
-  "inaceptables": {
-    "tiene": false,
-    "criterios": []
-  },
-  "sarlaft": {
-    "valor": null,
-    "interpretacion": "NO_EN_LISTAS|EN_LISTAS|NO_VALIDADO",
-    "esInaceptable": false
-  },
-  "embargos": {
-    "cantidadEnDesprendible": 0,
-    "excedeLimite": false,
-    "detalle": []
-  },
-  "procesosJudiciales": {
-    "totalComoDemandado60m": 0,
-    "excedeLimite5": false,
-    "procesosRelevantes": []
-  },
-  "capacidadPago": {
-    "formulaAplicada": "string",
-    "pensionBruta": 0,
-    "base50pct": 0,
-    "descuentosLey": 0,
-    "descuentosLibranza": 0,
-    "resguardo": 0,
-    "capacidadDisponible": 0
-  },
-  "dictamen": {
-    "decision": "APROBADO|CONDICIONADO|RECHAZADO",
-    "producto": "LIBRE_INVERSION|COMPRA_CARTERA|AMBOS|NO_APLICA",
-    "montoMaximo": 0,
-    "plazoMaximo": 144,
-    "condiciones": [],
-    "motivosRechazo": [],
-    "alertas": []
-  },
-  "resumen": "string max 250 chars"
-}
-```
-
-Responde ÚNICAMENTE JSON válido, sin texto adicional."""
-
-
-# =============================================================================
 # CLAUDE CLIENT
 # =============================================================================
 
@@ -578,7 +483,7 @@ def verify_api_key(api_key: str = Depends(api_key_header)) -> str:
 # FASTAPI APP
 # =============================================================================
 
-app = FastAPI(title="KALA Credit Validation", version="1.0.1")
+app = FastAPI(title="KALA Credit Validation", version="1.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 kala_client = KalaAPIClient()
@@ -586,7 +491,11 @@ kala_client = KalaAPIClient()
 
 @app.get("/")
 def root():
-    return {"message": "KALA Credit Validation API", "version": "1.0.1", "prompt_version": PROMPT_VERSION}
+    return {
+        "message": "KALA Credit Validation API", 
+        "version": "1.1.0", 
+        "prompt_version": PROMPT_VERSION
+    }
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -596,7 +505,8 @@ def health_check():
     
     return HealthResponse(
         status="healthy" if engine else "degraded",
-        version="1.0.1",
+        version="1.1.0",
+        prompt_version=PROMPT_VERSION,
         database="configured" if engine else "NOT configured",
         database_url_format=db_format,
         claude_api="configured" if ANTHROPIC_API_KEY else "NOT configured",
@@ -701,9 +611,15 @@ def get_audit(transaction_id: str, api_key: str = Depends(verify_api_key)):
         if not audits:
             raise HTTPException(status_code=404, detail="No records found")
         return {"transaction_id": transaction_id, "total": len(audits),
-                "audits": [{"id": a.id, "decision": a.decision, "status": a.status, "created_at": a.created_at.isoformat() if a.created_at else None} for a in audits]}
+                "audits": [{"id": a.id, "decision": a.decision, "status": a.status, "prompt_version": a.prompt_version, "created_at": a.created_at.isoformat() if a.created_at else None} for a in audits]}
     finally:
         db.close()
 
 
-logger.info("API READY")
+@app.get("/api/v1/prompt-version")
+def get_prompt_version():
+    """Retorna la versión actual del prompt."""
+    return {"prompt_version": PROMPT_VERSION}
+
+
+logger.info(f"API READY - Prompt v{PROMPT_VERSION}")
