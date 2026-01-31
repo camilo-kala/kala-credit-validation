@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KALA Credit Validation API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+        
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .section {
+            margin-bottom: 30px;
+        }
+        
+        .section h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.8em;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 10px;
+        }
+        
+        .section h3 {
+            color: #764ba2;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 1.3em;
+        }
+        
+        .endpoint {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        
+        .endpoint .method {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 0.9em;
+            margin-right: 10px;
+        }
+        
+        .endpoint .method.get {
+            background: #28a745;
+        }
+        
+        .endpoint .method.post {
+            background: #007bff;
+        }
+        
+        .endpoint .path {
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .endpoint .description {
+            margin-top: 10px;
+            color: #666;
+        }
+        
+        code {
+            background: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        
+        pre {
+            background: #2d2d2d;
+            color: #f8f8f8;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 15px 0;
+        }
+        
+        pre code {
+            background: transparent;
+            color: #f8f8f8;
+            padding: 0;
+        }
+        
+        .badge {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            margin-left: 10px;
+        }
+        
+        .badge.warning {
+            background: #ffc107;
+            color: #333;
+        }
+        
+        .badge.danger {
+            background: #dc3545;
+        }
+        
+        .footer {
+            background: #f8f9fa;
+            padding: 20px 40px;
+            text-align: center;
+            color: #666;
+            border-top: 1px solid #e0e0e0;
+        }
+        
+        .links {
+            margin-top: 20px;
+        }
+        
+        .links a {
+            color: #667eea;
+            text-decoration: none;
+            margin: 0 15px;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+        
+        .links a:hover {
+            color: #764ba2;
+            text-decoration: underline;
+        }
+        
+        ul {
+            margin-left: 20px;
+            margin-top: 10px;
+        }
+        
+        li {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏦 KALA Credit Validation API</h1>
+            <p>AI-Powered Credit Assessment for Payroll Loans</p>
+            <span class="badge">v1.0.0</span>
+        </div>
+        
+        <div class="content">
+            <div class="section">
+                <h2>📋 Overview</h2>
+                <p>
+                    The KALA Credit Validation API provides automated credit assessment for payroll loan applications (libranza) 
+                    for retirees. It integrates OCR data, credit bureau reports, and background checks to make informed lending decisions 
+                    using AI-powered analysis.
+                </p>
+            </div>
+            
+            <div class="section">
+                <h2>🔌 API Endpoints</h2>
+                
+                <div class="endpoint">
+                    <span class="method get">GET</span>
+                    <span class="path">/</span>
+                    <div class="description">
+                        API welcome message and version information
+                    </div>
+                </div>
+                
+                <div class="endpoint">
+                    <span class="method get">GET</span>
+                    <span class="path">/health</span>
+                    <div class="description">
+                        Health check endpoint. Returns status of database, Claude API, and Kala API connections.
+                    </div>
+                </div>
+                
+                <div class="endpoint">
+                    <span class="method post">POST</span>
+                    <span class="path">/api/v1/validate</span>
+                    <span class="badge danger">Auth Required</span>
+                    <div class="description">
+                        <p>Validates a credit application and returns a lending decision.</p>
+                        <h3>Request Headers:</h3>
+                        <ul>
+                            <li><code>X-API-Key</code>: Your API key for authentication</li>
+                            <li><code>Content-Type: application/json</code></li>
+                        </ul>
+                        <h3>Request Body:</h3>
+                        <pre><code>{
+  "transaction_id": "0d88e10c-884f-4ea6-a5da-f9a5e72c4459"
+}</code></pre>
+                        <h3>Response:</h3>
+                        <pre><code>{
+  "transaction_id": "0d88e10c-884f-4ea6-a5da-f9a5e72c4459",
+  "status": "SUCCESS",
+  "decision": "APROBADO",
+  "producto": "LIBRE_INVERSION",
+  "monto_maximo": 5000000,
+  "plazo_maximo": 144,
+  "capacidad_disponible": 250000,
+  "resumen": "Cliente aprobado con capacidad de pago suficiente...",
+  "dictamen_completo": { ... },
+  "latency_ms": 3420,
+  "audit_id": 123
+}</code></pre>
+                    </div>
+                </div>
+                
+                <div class="endpoint">
+                    <span class="method get">GET</span>
+                    <span class="path">/api/v1/audit/{transaction_id}</span>
+                    <span class="badge danger">Auth Required</span>
+                    <div class="description">
+                        <p>Retrieves audit records for a specific transaction.</p>
+                        <h3>Request Headers:</h3>
+                        <ul>
+                            <li><code>X-API-Key</code>: Your API key for authentication</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>🔐 Authentication</h2>
+                <p>
+                    All protected endpoints require an API key to be passed in the <code>X-API-Key</code> header:
+                </p>
+                <pre><code>curl -X POST https://your-api.vercel.app/api/v1/validate \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"transaction_id": "your-transaction-id"}'</code></pre>
+            </div>
+            
+            <div class="section">
+                <h2>⚙️ Features</h2>
+                <ul>
+                    <li>🤖 AI-powered credit analysis using Claude Sonnet 4</li>
+                    <li>📊 Integration with OCR, Credit Bureau, and Background Check data</li>
+                    <li>💾 Automatic audit logging to PostgreSQL (Neon)</li>
+                    <li>⚡ Fast response times with intelligent caching</li>
+                    <li>🔒 Secure API key authentication</li>
+                    <li>📈 Comprehensive decision metrics and reasoning</li>
+                </ul>
+            </div>
+            
+            <div class="section">
+                <h2>📊 Decision Types</h2>
+                <ul>
+                    <li><strong>APROBADO</strong>: Application approved with recommended loan amount and term</li>
+                    <li><strong>CONDICIONADO</strong>: Approved with specific conditions or limitations</li>
+                    <li><strong>RECHAZADO</strong>: Application rejected with detailed reasons</li>
+                </ul>
+            </div>
+            
+            <div class="section">
+                <h2>🚀 Getting Started</h2>
+                <p>
+                    To start using the API:
+                </p>
+                <ol>
+                    <li>Contact your administrator to obtain an API key</li>
+                    <li>Test the <code>/health</code> endpoint to verify connectivity</li>
+                    <li>Submit validation requests with valid transaction IDs</li>
+                    <li>Review audit logs for compliance and tracking</li>
+                </ol>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>&copy; 2025 KALA Platform. All rights reserved.</p>
+            <div class="links">
+                <a href="/health">Health Check</a>
+                <a href="https://api.kalaplatform.tech">KALA Platform</a>
+                <a href="https://github.com/camilo-kala/kala-credit-validation">GitHub</a>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Vercel Web Analytics -->
+    <script>
+        window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+    </script>
+    <script defer src="/_vercel/insights/script.js"></script>
+</body>
+</html>
