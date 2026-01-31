@@ -3,22 +3,25 @@
   "builds": [
     {
       "src": "api/index.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "15mb",
+        "runtime": "python3.11"
+      }
     }
   ],
   "routes": [
     {
+      "src": "/api/(.*)",
+      "dest": "api/index.py"
+    },
+    {
+      "src": "/health",
+      "dest": "api/index.py"
+    },
+    {
       "src": "/(.*)",
       "dest": "api/index.py"
     }
-  ],
-  "env": {
-    "KALA_API_BASE": "@kala_api_base",
-    "KALA_AUTH_EMAIL": "@kala_auth_email",
-    "KALA_AUTH_PASSWORD": "@kala_auth_password",
-    "DATABASE_URL": "@database_url",
-    "ANTHROPIC_API_KEY": "@anthropic_api_key",
-    "CLAUDE_MODEL": "@claude_model",
-    "API_KEY_SECRET": "@api_key_secret"
-  }
+  ]
 }
