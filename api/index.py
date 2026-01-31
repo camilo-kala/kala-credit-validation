@@ -43,50 +43,30 @@ API_KEY_SECRET = os.getenv("API_KEY_SECRET", "kala-credit-validation-api-key-202
 
 logger.info("ENVIRONMENT VARIABLES CHECK:")
 logger.info(f"  KALA_API_BASE: {KALA_API_BASE}")
-logger.info(f"  KALA_AUTH_EMAIL: {'SET (' + KALA_AUTH_EMAIL[:10] + '...)' if KALA_AUTH_EMAIL else 'NOT SET'}")
-logger.info(f"  KALA_AUTH_PASSWORD: {'SET (length=' + str(len(KALA_AUTH_PASSWORD)) + ')' if KALA_AUTH_PASSWORD else 'NOT SET'}")
-logger.info(f"  DATABASE_URL: {'SET (' + DATABASE_URL[:30] + '...)' if DATABASE_URL else 'NOT SET'}")
+logger.info(f"  KALA_AUTH_EMAIL: {'SET' if KALA_AUTH_EMAIL else 'NOT SET'}")
+logger.info(f"  KALA_AUTH_PASSWORD: {'SET' if KALA_AUTH_PASSWORD else 'NOT SET'}")
+logger.info(f"  DATABASE_URL: {'SET' if DATABASE_URL else 'NOT SET'}")
 logger.info(f"  ANTHROPIC_API_KEY: {'SET (' + ANTHROPIC_API_KEY[:15] + '...)' if ANTHROPIC_API_KEY else 'NOT SET'}")
 logger.info(f"  CLAUDE_MODEL: {CLAUDE_MODEL}")
-logger.info(f"  API_KEY_SECRET: {'SET (length=' + str(len(API_KEY_SECRET)) + ')' if API_KEY_SECRET else 'NOT SET'}")
 
 MAX_CLAUDE_RETRIES = 2
 PROMPT_VERSION = "1.0.0"
 
 # =============================================================================
-# IMPORTS WITH LOGGING
+# IMPORTS
 # =============================================================================
 
-logger.info("Importing dependencies...")
+import httpx
+import anthropic
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
 
-try:
-    import httpx
-    logger.info("  ✓ httpx imported")
-except ImportError as e:
-    logger.error(f"  ✗ httpx import failed: {e}")
-
-try:
-    import anthropic
-    logger.info("  ✓ anthropic imported")
-except ImportError as e:
-    logger.error(f"  ✗ anthropic import failed: {e}")
-
-try:
-    from fastapi import FastAPI, HTTPException, Depends
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.security import APIKeyHeader
-    logger.info("  ✓ fastapi imported")
-except ImportError as e:
-    logger.error(f"  ✗ fastapi import failed: {e}")
-
-try:
-    from pydantic import BaseModel, Field
-    logger.info("  ✓ pydantic imported")
-except ImportError as e:
-    logger.error(f"  ✗ pydantic import failed: {e}")
+logger.info("All dependencies imported successfully")
 
 # =============================================================================
-# DATABASE SETUP WITH VERBOSE LOGGING
+# DATABASE SETUP
 # =============================================================================
 
 engine = None
@@ -94,26 +74,12 @@ SessionLocal = None
 CreditValidationAudit = None
 Base = None
 
-logger.info("=" * 60)
-logger.info("DATABASE CONFIGURATION")
-logger.info("=" * 60)
-
-if not DATABASE_URL:
-    logger.warning("DATABASE_URL is empty - database will be disabled")
-elif not DATABASE_URL.startswith("postgresql"):
-    logger.error(f"DATABASE_URL has invalid format. Must start with 'postgresql://'")
-    logger.error(f"Current value starts with: {DATABASE_URL[:20]}...")
-else:
-    logger.info(f"DATABASE_URL format looks correct (starts with 'postgresql')")
-    logger.info(f"Attempting database connection...")
-    
+if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
     try:
         from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Boolean, JSON
         from sqlalchemy.orm import declarative_base, sessionmaker
-        logger.info("  ✓ sqlalchemy imported")
         
         Base = declarative_base()
-        logger.info("  ✓ Base created")
         
         class CreditValidationAudit(Base):
             __tablename__ = "credit_validation_audit"
@@ -149,45 +115,21 @@ else:
             created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
             created_by = Column(String(100), nullable=True)
         
-        logger.info("  ✓ CreditValidationAudit model defined")
-        
         db_url = DATABASE_URL
         if "sslmode" not in db_url:
             db_url = f"{db_url}?sslmode=require"
-            logger.info(f"  Added sslmode=require to connection string")
         
-        logger.info(f"  Creating engine...")
-        engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300, echo=True)
-        logger.info("  ✓ Engine created")
-        
-        logger.info(f"  Creating sessionmaker...")
+        engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300)
         SessionLocal = sessionmaker(bind=engine)
-        logger.info("  ✓ SessionLocal created")
-        
-        logger.info(f"  Creating tables...")
         Base.metadata.create_all(bind=engine)
-        logger.info("  ✓ Tables created/verified")
-        
-        # Test connection
-        logger.info(f"  Testing connection...")
-        with engine.connect() as conn:
-            result = conn.execute("SELECT 1")
-            logger.info("  ✓ Database connection test SUCCESSFUL")
-        
-        logger.info("=" * 60)
-        logger.info("DATABASE CONFIGURED SUCCESSFULLY")
-        logger.info("=" * 60)
+        logger.info("Database configured successfully")
         
     except Exception as e:
-        logger.error("=" * 60)
-        logger.error("DATABASE CONFIGURATION FAILED")
-        logger.error("=" * 60)
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
+        logger.error(f"Database configuration failed: {e}")
         engine = None
         SessionLocal = None
-        CreditValidationAudit = None
+else:
+    logger.warning(f"Database not configured. URL starts with: {DATABASE_URL[:20] if DATABASE_URL else 'EMPTY'}")
 
 
 # =============================================================================
@@ -217,7 +159,6 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     database: str
-    database_url_set: bool
     database_url_format: str
     claude_api: str
     claude_api_format: str
@@ -242,7 +183,6 @@ class TokenCache:
     def set_token(cls, token: str, expires_in: int = 3600):
         cls._token = token
         cls._expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-        logger.info(f"Token cached, expires in {expires_in}s")
     
     @classmethod
     def get_token(cls) -> Optional[str]:
@@ -264,30 +204,23 @@ class KalaAPIClient:
     def _ensure_token(self, client: httpx.Client) -> str:
         token = TokenCache.get_token()
         if token:
-            logger.debug("Using cached token")
             return token
         
-        logger.info(f"Authenticating with Kala API...")
-        logger.debug(f"Auth URL: {self.base_url}/v2/auth")
-        
+        logger.info("Authenticating with Kala API...")
         response = client.post(
             f"{self.base_url}/v2/auth",
             json={"email": KALA_AUTH_EMAIL, "password": KALA_AUTH_PASSWORD},
             headers=self.headers
         )
-        
-        logger.debug(f"Auth response status: {response.status_code}")
-        
         response.raise_for_status()
         data = response.json()
         
         token = data.get("token")
         if not token:
-            logger.error("No token in auth response")
             raise HTTPException(status_code=500, detail="Failed to get Kala API token")
         
         TokenCache.set_token(token, data.get("expiresIn", 3600))
-        logger.info("✓ Kala API authentication successful")
+        logger.info("✓ Kala API authenticated")
         return token
     
     def get_transaction_data(self, transaction_id: str) -> dict:
@@ -299,52 +232,41 @@ class KalaAPIClient:
             auth_headers = {**self.headers, "Authorization": f"Bearer {token}"}
             
             # Tasks
-            logger.debug(f"Fetching tasks...")
             tasks_resp = client.get(
                 f"{self.base_url}/v2/task_inbox",
                 params={"transactionId": transaction_id, "namesFrom": "TRUORA, BURO, GENERAL"},
                 headers=auth_headers
             )
-            logger.debug(f"Tasks response: {tasks_resp.status_code}")
             tasks_resp.raise_for_status()
             tasks_data = tasks_resp.json()
-            logger.info(f"✓ Tasks fetched: {len(tasks_data) if isinstance(tasks_data, list) else 'N/A'} items")
+            logger.info(f"✓ Tasks fetched")
             
             # Person
-            logger.debug(f"Fetching person...")
             person_resp = client.get(
                 f"{self.base_url}/v2/person/transaction/{transaction_id}/applicant",
                 headers=auth_headers
             )
-            logger.debug(f"Person response: {person_resp.status_code}")
             person_resp.raise_for_status()
             person_id = person_resp.json().get("id")
             
             if not person_id:
-                logger.error(f"No person_id found for transaction {transaction_id}")
-                raise HTTPException(status_code=404, detail=f"Person not found for transaction {transaction_id}")
+                raise HTTPException(status_code=404, detail=f"Person not found")
             logger.info(f"✓ Person ID: {person_id}")
             
             # External data
-            logger.debug(f"Fetching external data...")
             extdata_resp = client.get(
                 f"{self.base_url}/external_data/person/{person_id}",
                 headers=auth_headers
             )
-            logger.debug(f"External data response: {extdata_resp.status_code}")
             extdata_resp.raise_for_status()
             extdata = extdata_resp.json()
+            logger.info(f"✓ External data fetched")
         
         elapsed_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
-        logger.info(f"✓ Kala API calls completed in {elapsed_ms}ms")
         
         ocr = extdata.get("summaryTrebolOcr")
         buro = extdata.get("customSummaryBuro")
         truora = extdata.get("summaryTruoraBackgroundChecks")
-        
-        logger.info(f"  OCR data: {'present' if ocr else 'MISSING'}")
-        logger.info(f"  Buró data: {'present' if buro else 'MISSING'}")
-        logger.info(f"  Truora data: {'present' if truora else 'MISSING'}")
         
         if not ocr:
             raise HTTPException(status_code=422, detail="OCR data not available")
@@ -361,19 +283,72 @@ class KalaAPIClient:
 
 
 # =============================================================================
-# DATA CONSOLIDATION
+# SAFE DATA EXTRACTION HELPERS
+# =============================================================================
+
+def safe_get(obj, key, default=None):
+    """Safely get a value from dict or return default."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return default
+
+
+def safe_str(value, default=""):
+    """Safely convert to string."""
+    if value is None:
+        return default
+    return str(value)
+
+
+def safe_int(value, default=0):
+    """Safely convert to int."""
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_float(value, default=0.0):
+    """Safely convert to float."""
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+# =============================================================================
+# DATA CONSOLIDATION (FIXED)
 # =============================================================================
 
 def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: list) -> dict:
     logger.debug("Consolidating data for Claude...")
     
-    ocr_doc = ocr[0] if ocr else {}
-    std = ocr_doc.get("standardizedData", {})
-    salary = std.get("salary_info", {})
-    personal = std.get("personal_info", {})
-    employment = std.get("employment_info", {})
+    # OCR data extraction
+    ocr_doc = ocr[0] if ocr and len(ocr) > 0 else {}
+    logger.debug(f"  OCR doc type: {type(ocr_doc)}")
     
-    pagaduria = employment.get("company_name") or employment.get("employer_name") or "DESCONOCIDA"
+    if isinstance(ocr_doc, dict):
+        std = ocr_doc.get("standardizedData", {})
+    else:
+        std = {}
+        logger.warning(f"  OCR doc is not a dict, it's: {type(ocr_doc)}")
+    
+    salary = safe_get(std, "salary_info", {})
+    personal = safe_get(std, "personal_info", {})
+    employment = safe_get(std, "employment_info", {})
+    
+    logger.debug(f"  salary type: {type(salary)}")
+    logger.debug(f"  personal type: {type(personal)}")
+    logger.debug(f"  employment type: {type(employment)}")
+    
+    # Pagaduría
+    pagaduria = safe_get(employment, "company_name") or safe_get(employment, "employer_name") or "DESCONOCIDA"
+    pagaduria = safe_str(pagaduria, "DESCONOCIDA")
+    
     pag_upper = pagaduria.upper()
     pag_type = "OTRAS"
     for t in ["COLPENSIONES", "FOPEP", "FIDUPREVISORA", "CASUR", "CREMIL", "POSITIVA"]:
@@ -381,60 +356,130 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
             pag_type = t
             break
     
-    logger.debug(f"  Pagaduría: {pagaduria} (type: {pag_type})")
+    logger.info(f"  Pagaduría: {pagaduria} (type: {pag_type})")
     
-    deductions = salary.get("deduction_details", [])
-    libranzas_ocr, embargos_ocr = [], []
+    # Deductions - handle different data formats
+    deductions_raw = safe_get(salary, "deduction_details", [])
+    logger.debug(f"  deductions_raw type: {type(deductions_raw)}, len: {len(deductions_raw) if isinstance(deductions_raw, list) else 'N/A'}")
     
-    for d in deductions:
-        desc = (d.get("description") or "").upper()
-        if any(k in desc for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
-            libranzas_ocr.append({"descripcion": d.get("description"), "monto": d.get("amount")})
-        if "EMBARGO" in desc:
-            embargos_ocr.append({"descripcion": d.get("description"), "monto": d.get("amount")})
+    deductions = []
+    libranzas_ocr = []
+    embargos_ocr = []
     
-    logger.debug(f"  Libranzas OCR: {len(libranzas_ocr)}, Embargos: {len(embargos_ocr)}")
+    if isinstance(deductions_raw, list):
+        for i, d in enumerate(deductions_raw):
+            logger.debug(f"    deduction[{i}] type: {type(d)}, value: {str(d)[:100]}")
+            
+            # Handle dict format
+            if isinstance(d, dict):
+                desc = safe_str(d.get("description"), "")
+                amount = d.get("amount")
+                deductions.append({"description": desc, "amount": amount})
+                
+                desc_upper = desc.upper()
+                if any(k in desc_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
+                    libranzas_ocr.append({"descripcion": desc, "monto": amount})
+                if "EMBARGO" in desc_upper:
+                    embargos_ocr.append({"descripcion": desc, "monto": amount})
+            
+            # Handle string format
+            elif isinstance(d, str):
+                deductions.append({"description": d, "amount": None})
+                d_upper = d.upper()
+                if any(k in d_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
+                    libranzas_ocr.append({"descripcion": d, "monto": None})
+                if "EMBARGO" in d_upper:
+                    embargos_ocr.append({"descripcion": d, "monto": None})
+            
+            # Handle other formats
+            else:
+                logger.warning(f"    Unknown deduction format: {type(d)}")
+                deductions.append({"description": str(d), "amount": None})
     
+    logger.info(f"  Deductions: {len(deductions)}, Libranzas: {len(libranzas_ocr)}, Embargos: {len(embargos_ocr)}")
+    
+    # Buró loans
     loans_buro = []
-    for loan in buro.get("outstandingLoans", []):
-        acc = loan.get("accounts", {})
-        loans_buro.append({
-            "entity": acc.get("lenderName"), "type": acc.get("accountType"),
-            "debt": int(acc.get("totalDebt") or 0), "installment": int(acc.get("installments") or 0),
-            "isLibranza": acc.get("typePayrollDeductionLoan"), "pastDueMax": acc.get("pastDueMax"),
-            "paymentBehavior12m": (acc.get("paymentBehavior") or "")[:12], "sector": acc.get("sector")
-        })
+    outstanding_loans = safe_get(buro, "outstandingLoans", [])
     
-    logger.debug(f"  Loans Buró: {len(loans_buro)}")
+    if isinstance(outstanding_loans, list):
+        for loan in outstanding_loans:
+            if isinstance(loan, dict):
+                acc = safe_get(loan, "accounts", {})
+                if isinstance(acc, dict):
+                    loans_buro.append({
+                        "entity": safe_get(acc, "lenderName"),
+                        "type": safe_get(acc, "accountType"),
+                        "debt": safe_int(safe_get(acc, "totalDebt")),
+                        "installment": safe_int(safe_get(acc, "installments")),
+                        "isLibranza": safe_get(acc, "typePayrollDeductionLoan"),
+                        "pastDueMax": safe_get(acc, "pastDueMax"),
+                        "paymentBehavior12m": safe_str(safe_get(acc, "paymentBehavior"))[:12],
+                        "sector": safe_get(acc, "sector")
+                    })
     
-    enrichment = truora.get("enrichment", {})
-    processes = [{"entity": p.get("entity"), "roleDefendant": p.get("roleDefendant"),
-                  "processOpen": p.get("processOpen"), "processType": p.get("processType")}
-                 for p in (enrichment.get("processes") or [])]
+    logger.info(f"  Loans Buró: {len(loans_buro)}")
     
-    logger.debug(f"  Processes Truora: {len(processes)}")
-    logger.info("✓ Data consolidated")
+    # Truora processes
+    enrichment = safe_get(truora, "enrichment", {})
+    processes_raw = safe_get(enrichment, "processes", [])
+    processes = []
+    
+    if isinstance(processes_raw, list):
+        for p in processes_raw:
+            if isinstance(p, dict):
+                processes.append({
+                    "entity": safe_get(p, "entity"),
+                    "roleDefendant": safe_get(p, "roleDefendant"),
+                    "processOpen": safe_get(p, "processOpen"),
+                    "processType": safe_get(p, "processType")
+                })
+    
+    logger.info(f"  Processes Truora: {len(processes)}")
+    
+    # Tasks
+    tasks_processed = []
+    if isinstance(tasks, list):
+        for t in tasks:
+            if isinstance(t, dict):
+                tasks_processed.append({
+                    "id": safe_get(t, "id"),
+                    "source": safe_get(t, "nameFrom"),
+                    "allValidated": safe_get(t, "allTaskValidated")
+                })
+    
+    logger.info("✓ Data consolidated successfully")
     
     return {
         "txn": txn_id,
         "ocr": {
-            "personal": personal, "pagaduria": pagaduria, "pagaduriaType": pag_type,
-            "salary": {"gross": salary.get("gross_salary"), "net": salary.get("net_salary")},
-            "deductions": [{"description": d.get("description"), "amount": d.get("amount")} for d in deductions],
-            "libranzasIdentificadas": libranzas_ocr, "embargos": embargos_ocr, "cantidadEmbargos": len(embargos_ocr)
+            "personal": personal if isinstance(personal, dict) else {},
+            "pagaduria": pagaduria,
+            "pagaduriaType": pag_type,
+            "salary": {
+                "gross": safe_get(salary, "gross_salary"),
+                "net": safe_get(salary, "net_salary")
+            },
+            "deductions": deductions,
+            "libranzasIdentificadas": libranzas_ocr,
+            "embargos": embargos_ocr,
+            "cantidadEmbargos": len(embargos_ocr)
         },
         "buro": {
-            "score": buro.get("score", {}).get("scoring"),
-            "name": buro.get("basicInformation", {}).get("fullName"),
-            "cc": buro.get("basicInformation", {}).get("documentIdentificationNumber"),
-            "alerts": buro.get("alert"), "loans": loans_buro
+            "score": safe_get(safe_get(buro, "score", {}), "scoring"),
+            "name": safe_get(safe_get(buro, "basicInformation", {}), "fullName"),
+            "cc": safe_get(safe_get(buro, "basicInformation", {}), "documentIdentificationNumber"),
+            "alerts": safe_get(buro, "alert"),
+            "loans": loans_buro
         },
         "truora": {
-            "enrichment": {"sarlaftCompliance": enrichment.get("sarlaftCompliance"),
-                          "numberOfProcesses": enrichment.get("numberOfProcesses")},
+            "enrichment": {
+                "sarlaftCompliance": safe_get(enrichment, "sarlaftCompliance"),
+                "numberOfProcesses": safe_get(enrichment, "numberOfProcesses")
+            },
             "processes": processes
         },
-        "tasks": [{"id": t.get("id"), "source": t.get("nameFrom"), "allValidated": t.get("allTaskValidated")} for t in tasks]
+        "tasks": tasks_processed
     }
 
 
@@ -480,8 +525,6 @@ Responde ÚNICAMENTE JSON válido."""
 
 def call_claude(consolidated: dict) -> tuple[dict, dict]:
     logger.info("Calling Claude API...")
-    logger.debug(f"  Model: {CLAUDE_MODEL}")
-    logger.debug(f"  API Key prefix: {ANTHROPIC_API_KEY[:15]}...")
     
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     user_prompt = f"Analiza esta solicitud:\n{json.dumps(consolidated, indent=2, ensure_ascii=False)}"
@@ -490,7 +533,6 @@ def call_claude(consolidated: dict) -> tuple[dict, dict]:
     
     for attempt in range(MAX_CLAUDE_RETRIES + 1):
         try:
-            logger.debug(f"  Attempt {attempt + 1}/{MAX_CLAUDE_RETRIES + 1}")
             start = datetime.now(timezone.utc)
             
             response = client.messages.create(
@@ -502,24 +544,24 @@ def call_claude(consolidated: dict) -> tuple[dict, dict]:
             
             raw = response.content[0].text if response.content else ""
             metrics.update({
-                "raw_response": raw, "tokens_input": response.usage.input_tokens,
-                "tokens_output": response.usage.output_tokens, "latency_ms": elapsed, "retries": attempt
+                "raw_response": raw,
+                "tokens_input": response.usage.input_tokens,
+                "tokens_output": response.usage.output_tokens,
+                "latency_ms": elapsed,
+                "retries": attempt
             })
             
-            logger.info(f"✓ Claude responded in {elapsed}ms")
-            logger.debug(f"  Tokens: {response.usage.input_tokens} in / {response.usage.output_tokens} out")
+            logger.info(f"✓ Claude responded in {elapsed}ms (tokens: {response.usage.input_tokens}/{response.usage.output_tokens})")
             
             match = re.search(r'\{[\s\S]*\}', raw)
             if match:
                 parsed = json.loads(match.group())
-                logger.debug(f"  Decision: {parsed.get('dictamen', {}).get('decision', 'N/A')}")
                 return parsed, metrics
             
-            logger.error("No JSON found in Claude response")
-            raise ValueError("No JSON found")
+            raise ValueError("No JSON found in response")
             
         except Exception as e:
-            logger.error(f"  Attempt {attempt + 1} failed: {type(e).__name__}: {e}")
+            logger.error(f"Claude attempt {attempt + 1} failed: {e}")
             if attempt == MAX_CLAUDE_RETRIES:
                 raise
 
@@ -532,12 +574,9 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 def verify_api_key(api_key: str = Depends(api_key_header)) -> str:
     if not api_key:
-        logger.warning("API Key missing in request")
         raise HTTPException(status_code=401, detail="API Key required")
     if hashlib.sha256(api_key.encode()).hexdigest() != hashlib.sha256(API_KEY_SECRET.encode()).hexdigest():
-        logger.warning("Invalid API Key provided")
         raise HTTPException(status_code=401, detail="Invalid API Key")
-    logger.debug("API Key verified")
     return api_key
 
 
@@ -550,58 +589,45 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 kala_client = KalaAPIClient()
 
-logger.info("FastAPI app initialized")
-
 
 @app.get("/")
 def root():
-    logger.info("GET / called")
     return {"message": "KALA Credit Validation API", "version": "1.0.0"}
 
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    logger.info("GET /health called")
-    
-    # Check DATABASE_URL format
-    db_url_format = "not_set"
+    db_format = "not_set"
     if DATABASE_URL:
         if DATABASE_URL.startswith("postgresql://"):
-            db_url_format = "valid"
-        elif DATABASE_URL.startswith("psql "):
-            db_url_format = "INVALID - remove 'psql ' prefix"
+            db_format = "valid"
         else:
-            db_url_format = f"INVALID - starts with '{DATABASE_URL[:10]}...'"
+            db_format = f"INVALID - starts with '{DATABASE_URL[:15]}...'"
     
-    # Check ANTHROPIC_API_KEY format
     claude_format = "not_set"
     if ANTHROPIC_API_KEY:
         if ANTHROPIC_API_KEY.startswith("sk-ant-"):
             claude_format = "valid"
         elif ANTHROPIC_API_KEY.startswith("eyJ"):
-            claude_format = "INVALID - this looks like a JWT, not an Anthropic API key"
+            claude_format = "INVALID - looks like JWT"
         else:
-            claude_format = f"INVALID - should start with 'sk-ant-'"
+            claude_format = f"UNKNOWN - starts with '{ANTHROPIC_API_KEY[:10]}...'"
     
-    response = HealthResponse(
+    return HealthResponse(
         status="healthy" if engine else "degraded",
         version="1.0.0",
         database="configured" if engine else "NOT configured",
-        database_url_set=bool(DATABASE_URL),
-        database_url_format=db_url_format,
+        database_url_format=db_format,
         claude_api="configured" if ANTHROPIC_API_KEY else "NOT configured",
         claude_api_format=claude_format,
         kala_api="configured" if KALA_AUTH_EMAIL else "NOT configured"
     )
-    
-    logger.info(f"Health response: {response.model_dump()}")
-    return response
 
 
 @app.post("/api/v1/validate", response_model=ValidationResponse)
 def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_api_key)):
     logger.info("=" * 60)
-    logger.info(f"POST /api/v1/validate - Transaction: {request.transaction_id}")
+    logger.info(f"VALIDATE: {request.transaction_id}")
     logger.info("=" * 60)
     
     start = datetime.now(timezone.utc)
@@ -609,14 +635,10 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
     
     db, audit = None, None
     if SessionLocal and CreditValidationAudit:
-        logger.debug("Creating database session and audit record...")
         db = SessionLocal()
         audit = CreditValidationAudit(transaction_id=txn_id, model_version=CLAUDE_MODEL, prompt_version=PROMPT_VERSION, status="PROCESSING")
-    else:
-        logger.warning("Database not available - audit will not be saved")
     
     try:
-        # Get data from Kala
         data = kala_client.get_transaction_data(txn_id)
         
         if audit:
@@ -626,12 +648,9 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
             audit.input_truora = data["truora"]
             audit.latency_kala_api_ms = data["latency_ms"]
         
-        # Consolidate
         consolidated = consolidate_data(txn_id, data["ocr"], data["buro"], data["truora"], data["tasks"])
         
-        # Call Claude
         if not ANTHROPIC_API_KEY:
-            logger.error("ANTHROPIC_API_KEY not configured")
             raise HTTPException(status_code=500, detail="Claude API not configured")
         
         parsed, metrics = call_claude(consolidated)
@@ -661,11 +680,8 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
             db.commit()
             db.refresh(audit)
             audit_id = audit.id
-            logger.info(f"✓ Audit saved with ID: {audit_id}")
         
-        logger.info("=" * 60)
-        logger.info(f"VALIDATION COMPLETE - Decision: {dictamen.get('decision')} - {total_ms}ms")
-        logger.info("=" * 60)
+        logger.info(f"✓ COMPLETE: {dictamen.get('decision')} in {total_ms}ms")
         
         return ValidationResponse(
             transaction_id=txn_id, status="SUCCESS", decision=dictamen.get("decision"),
@@ -678,10 +694,8 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("=" * 60)
-        logger.error(f"VALIDATION FAILED: {type(e).__name__}: {e}")
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
-        logger.error("=" * 60)
+        logger.error(f"FAILED: {type(e).__name__}: {e}")
+        logger.error(traceback.format_exc())
         
         total_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
         if audit and db:
@@ -694,29 +708,21 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
     finally:
         if db:
             db.close()
-            logger.debug("Database session closed")
 
 
 @app.get("/api/v1/audit/{transaction_id}")
 def get_audit(transaction_id: str, api_key: str = Depends(verify_api_key)):
-    logger.info(f"GET /api/v1/audit/{transaction_id}")
-    
     if not SessionLocal:
-        logger.error("Database not configured")
         raise HTTPException(status_code=500, detail="Database not configured")
-    
     db = SessionLocal()
     try:
         audits = db.query(CreditValidationAudit).filter(CreditValidationAudit.transaction_id == transaction_id).all()
         if not audits:
             raise HTTPException(status_code=404, detail="No records found")
-        logger.info(f"Found {len(audits)} audit records")
         return {"transaction_id": transaction_id, "total": len(audits),
                 "audits": [{"id": a.id, "decision": a.decision, "status": a.status} for a in audits]}
     finally:
         db.close()
 
 
-logger.info("=" * 60)
 logger.info("API READY")
-logger.info("=" * 60)
