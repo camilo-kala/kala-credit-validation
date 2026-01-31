@@ -1,6 +1,5 @@
 """
 KALA Credit Validation AI Agent - Vercel Serverless
-====================================================
 """
 
 import os
@@ -17,7 +16,6 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
-from mangum import Mangum
 
 # =============================================================================
 # CONFIGURATION
@@ -38,7 +36,7 @@ MAX_CLAUDE_RETRIES = 2
 PROMPT_VERSION = "1.0.0"
 
 # =============================================================================
-# DATABASE SETUP (Only if DATABASE_URL is configured)
+# DATABASE SETUP
 # =============================================================================
 
 engine = None
@@ -93,26 +91,10 @@ if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
         
         engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300)
         SessionLocal = sessionmaker(bind=engine)
+        Base.metadata.create_all(bind=engine)
         logger.info("Database configured successfully")
     except Exception as e:
         logger.error(f"Database configuration failed: {e}")
-        engine = None
-        SessionLocal = None
-
-
-def get_db():
-    if not SessionLocal:
-        raise HTTPException(status_code=500, detail="Database not configured")
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-def init_db():
-    if engine and Base:
-        Base.metadata.create_all(bind=engine)
 
 
 # =============================================================================
@@ -143,6 +125,7 @@ class HealthResponse(BaseModel):
     version: str
     database: str
     claude_api: str
+    kala_api: str
 
 
 # =============================================================================
@@ -186,7 +169,6 @@ class KalaAPIClient:
         if token:
             return token
         
-        logger.info("Getting new token from Kala API...")
         response = client.post(
             f"{self.base_url}/v2/auth",
             json={"email": KALA_AUTH_EMAIL, "password": KALA_AUTH_PASSWORD},
@@ -248,10 +230,7 @@ class KalaAPIClient:
             raise HTTPException(status_code=422, detail="Truora data not available")
         
         return {
-            "person_id": person_id,
-            "ocr": ocr,
-            "buro": buro,
-            "truora": truora,
+            "person_id": person_id, "ocr": ocr, "buro": buro, "truora": truora,
             "tasks": tasks_data if isinstance(tasks_data, list) else [],
             "latency_ms": elapsed_ms
         }
@@ -277,8 +256,7 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
             break
     
     deductions = salary.get("deduction_details", [])
-    libranzas_ocr = []
-    embargos_ocr = []
+    libranzas_ocr, embargos_ocr = [], []
     
     for d in deductions:
         desc = (d.get("description") or "").upper()
@@ -291,29 +269,16 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
     for loan in buro.get("outstandingLoans", []):
         acc = loan.get("accounts", {})
         loans_buro.append({
-            "entity": acc.get("lenderName"),
-            "obligationNumber": acc.get("obligationNumber"),
-            "type": acc.get("accountType"),
-            "debt": int(acc.get("totalDebt") or 0),
-            "delinquentDebt": int(acc.get("totalDelinquentDebt") or 0),
-            "installment": int(acc.get("installments") or 0),
-            "isLibranza": acc.get("typePayrollDeductionLoan"),
-            "pastDueMax": acc.get("pastDueMax"),
-            "paymentBehavior12m": (acc.get("paymentBehavior") or "")[:12],
-            "sector": acc.get("sector")
+            "entity": acc.get("lenderName"), "type": acc.get("accountType"),
+            "debt": int(acc.get("totalDebt") or 0), "installment": int(acc.get("installments") or 0),
+            "isLibranza": acc.get("typePayrollDeductionLoan"), "pastDueMax": acc.get("pastDueMax"),
+            "paymentBehavior12m": (acc.get("paymentBehavior") or "")[:12], "sector": acc.get("sector")
         })
     
-    inquiries = [{"entity": i.get("lenderName"), "date": i.get("inquiryDate"), "type": i.get("accountType")}
-                 for i in (buro.get("inquiryFootprints") or [])[:15]]
-    
     enrichment = truora.get("enrichment", {})
-    processes = [{"database": p.get("databaseName"), "entity": p.get("entity"),
-                  "roleDefendant": p.get("roleDefendant"), "processOpen": p.get("processOpen"),
-                  "processType": p.get("processType"), "dateLastAction": p.get("dateLastAction")}
+    processes = [{"entity": p.get("entity"), "roleDefendant": p.get("roleDefendant"),
+                  "processOpen": p.get("processOpen"), "processType": p.get("processType")}
                  for p in (enrichment.get("processes") or [])]
-    
-    tasks_proc = [{"id": t.get("id"), "source": t.get("nameFrom"), "allValidated": t.get("allTaskValidated")}
-                  for t in tasks]
     
     return {
         "txn": txn_id,
@@ -327,18 +292,14 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
             "score": buro.get("score", {}).get("scoring"),
             "name": buro.get("basicInformation", {}).get("fullName"),
             "cc": buro.get("basicInformation", {}).get("documentIdentificationNumber"),
-            "alerts": buro.get("alert"),
-            "loans": loans_buro, "inquiries": inquiries
+            "alerts": buro.get("alert"), "loans": loans_buro
         },
         "truora": {
-            "enrichment": {
-                "hasBankruptcyAlerts": enrichment.get("hasBankruptcyAlerts"),
-                "numberOfProcesses": enrichment.get("numberOfProcesses"),
-                "sarlaftCompliance": enrichment.get("sarlaftCompliance")
-            },
+            "enrichment": {"sarlaftCompliance": enrichment.get("sarlaftCompliance"),
+                          "numberOfProcesses": enrichment.get("numberOfProcesses")},
             "processes": processes
         },
-        "tasks": tasks_proc
+        "tasks": [{"id": t.get("id"), "source": t.get("nameFrom"), "allValidated": t.get("allTaskValidated")} for t in tasks]
     }
 
 
@@ -347,45 +308,22 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
 # =============================================================================
 
 SYSTEM_PROMPT = """# ROL
-Eres analista de crédito de KALA. Evalúas solicitudes de libranza para pensionados aplicando ÚNICAMENTE los criterios explícitos de la Política General de Crédito.
+Eres analista de crédito de KALA. Evalúas solicitudes de libranza para pensionados.
 
 # REGLA FUNDAMENTAL
-NO hagas inferencias sobre atributos NO regulados:
-- El score de buró NO es criterio de rechazo
-- El nivel de endeudamiento total NO es criterio de rechazo
-- Solo rechaza por criterios EXPLÍCITOS de la política
+NO hagas inferencias sobre atributos NO regulados. Solo rechaza por criterios EXPLÍCITOS.
 
-# POLÍTICA DE CRÉDITO KALA
-
-## 1. CLIENTES INACEPTABLES (Rechazo inmediato)
+# CLIENTES INACEPTABLES
 - Ingreso < 1 SMMLV (~$1,300,000)
-- Incluidos en listas restrictivas (SARLAFT en Truora)
-- Figuran como fallecidos en buró
-- Procesos de insolvencia como deudor/demandante/convocante
-- 5+ procesos ejecutivos activos como DEMANDADO (últimos 60 meses)
-- Procesos penales activos con condena
+- Listas restrictivas (SARLAFT false)
+- Fallecidos en buró
+- 5+ procesos ejecutivos como DEMANDADO (últimos 60 meses)
 - >1 embargo en desprendible
 
-## 2. ELEGIBILIDAD
-- Edad: 18-90 años
-- Monto máximo: $120M (hasta 80 años), $20M (81-90 años)
-- Ingreso mínimo: 1 SMMLV
+# CAPACIDAD DE PAGO
+Capacidad = (Pensión Bruta / 2) - Descuentos de ley - Descuentos libranza - Resguardo($2,500)
 
-## 3. EMBARGOS
-- >1 embargo en desprendible = NO sujeto de crédito
-- CASUR/CREMIL: castigo 10% sobre valor embargo
-
-## 4. CAPACIDAD DE PAGO (Ley 1527)
-COLPENSIONES y otras: Capacidad = (Pensión Bruta / 2) - Descuentos de ley - Descuentos libranza - Resguardo($2,500)
-CASUR: Capacidad = (Pensión Bruta - 5%) / 2 - Descuentos - Resguardo($6,000)
-CREMIL: Capacidad = (Pensión Bruta / 2) - Todos los descuentos - Resguardo($6,000)
-
-## 5. VALIDACIONES CRUZADAS
-- Comparar libranzas BURO vs OCR
-- Verificar sarlaftCompliance en Truora
-- Contar procesos como DEMANDADO (últimos 60 meses, excluir Declarativo)
-
-# FORMATO RESPUESTA JSON
+# FORMATO JSON
 ```json
 {
   "txn": "string",
@@ -394,7 +332,6 @@ CREMIL: Capacidad = (Pensión Bruta / 2) - Todos los descuentos - Resguardo($6,0
   "embargos": {"cantidadEnDesprendible": 0, "excedeLimite": false},
   "procesosJudiciales": {"totalComoDemandado60m": 0, "excedeLimite5": false},
   "capacidadPago": {"pensionBruta": 0, "base50pct": 0, "descuentosLey": 0, "descuentosLibranza": 0, "resguardo": 0, "capacidadDisponible": 0},
-  "cruceOcrBuro": {"libranzasEnBuroNoEnOcr": [], "discrepanciasMonto": []},
   "dictamen": {"decision": "APROBADO|CONDICIONADO|RECHAZADO", "producto": "LIBRE_INVERSION|COMPRA_CARTERA|AMBOS|NO_APLICA", "montoMaximo": 0, "plazoMaximo": 144, "condiciones": [], "motivosRechazo": []},
   "resumen": "string max 250 chars"
 }
@@ -432,7 +369,6 @@ def call_claude(consolidated: dict) -> tuple[dict, dict]:
                 return json.loads(match.group()), metrics
             raise ValueError("No JSON found")
         except Exception as e:
-            logger.warning(f"Attempt {attempt + 1} failed: {e}")
             if attempt == MAX_CLAUDE_RETRIES:
                 raise
 
@@ -442,7 +378,6 @@ def call_claude(consolidated: dict) -> tuple[dict, dict]:
 # =============================================================================
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
 
 def verify_api_key(api_key: str = Depends(api_key_header)) -> str:
     if not api_key:
@@ -456,32 +391,25 @@ def verify_api_key(api_key: str = Depends(api_key_header)) -> str:
 # FASTAPI APP
 # =============================================================================
 
-app = FastAPI(
-    title="KALA Credit Validation AI Agent",
-    description="API para validación automatizada de créditos de libranza",
-    version="1.0.0"
-)
-
+app = FastAPI(title="KALA Credit Validation", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 kala_client = KalaAPIClient()
 
 
-@app.on_event("startup")
-def startup():
-    init_db()
+@app.get("/")
+def root():
+    return {"message": "KALA Credit Validation API", "version": "1.0.0"}
 
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    db_status = "configured" if engine else "not_configured"
-    claude_status = "configured" if ANTHROPIC_API_KEY else "not_configured"
-    return HealthResponse(status="healthy", version="1.0.0", database=db_status, claude_api=claude_status)
-
-
-@app.get("/")
-def root():
-    return {"message": "KALA Credit Validation API", "version": "1.0.0", "docs": "/docs"}
+    return HealthResponse(
+        status="healthy", version="1.0.0",
+        database="configured" if engine else "not_configured",
+        claude_api="configured" if ANTHROPIC_API_KEY else "not_configured",
+        kala_api="configured" if KALA_AUTH_EMAIL else "not_configured"
+    )
 
 
 @app.post("/api/v1/validate", response_model=ValidationResponse)
@@ -489,20 +417,12 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
     start = datetime.now(timezone.utc)
     txn_id = request.transaction_id
     
-    # Check if database is available
-    db = None
-    audit = None
+    db, audit = None, None
     if SessionLocal and CreditValidationAudit:
         db = SessionLocal()
-        audit = CreditValidationAudit(
-            transaction_id=txn_id, 
-            model_version=CLAUDE_MODEL, 
-            prompt_version=PROMPT_VERSION, 
-            status="PROCESSING"
-        )
+        audit = CreditValidationAudit(transaction_id=txn_id, model_version=CLAUDE_MODEL, prompt_version=PROMPT_VERSION, status="PROCESSING")
     
     try:
-        # Get data from Kala
         data = kala_client.get_transaction_data(txn_id)
         
         if audit:
@@ -510,30 +430,21 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
             audit.input_ocr = data["ocr"]
             audit.input_buro = data["buro"]
             audit.input_truora = data["truora"]
-            audit.input_tasks = data["tasks"]
             audit.latency_kala_api_ms = data["latency_ms"]
         
-        # Consolidate
         consolidated = consolidate_data(txn_id, data["ocr"], data["buro"], data["truora"], data["tasks"])
         
-        if audit:
-            audit.consolidated_prompt = json.dumps(consolidated, ensure_ascii=False)
-        
-        # Call Claude
         if not ANTHROPIC_API_KEY:
             raise HTTPException(status_code=500, detail="Claude API not configured")
         
         parsed, metrics = call_claude(consolidated)
         
         if audit:
-            audit.claude_response_raw = metrics["raw_response"]
             audit.claude_response_parsed = parsed
             audit.tokens_input = metrics["tokens_input"]
             audit.tokens_output = metrics["tokens_output"]
             audit.latency_claude_ms = metrics["latency_ms"]
-            audit.claude_retries = metrics["retries"]
         
-        # Extract dictamen
         dictamen = parsed.get("dictamen", {})
         capacidad = parsed.get("capacidadPago", {})
         
@@ -541,12 +452,7 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
             audit.decision = dictamen.get("decision")
             audit.producto = dictamen.get("producto")
             audit.monto_maximo = dictamen.get("montoMaximo")
-            audit.plazo_maximo = dictamen.get("plazoMaximo")
             audit.capacidad_disponible = capacidad.get("capacidadDisponible")
-            audit.tiene_inaceptables = parsed.get("inaceptables", {}).get("tiene", False)
-            audit.cantidad_embargos = parsed.get("embargos", {}).get("cantidadEnDesprendible", 0)
-            audit.procesos_demandado_60m = parsed.get("procesosJudiciales", {}).get("totalComoDemandado60m", 0)
-            audit.resumen = (parsed.get("resumen") or "")[:300]
         
         total_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
         
@@ -560,42 +466,24 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
             audit_id = audit.id
         
         return ValidationResponse(
-            transaction_id=txn_id, 
-            status="SUCCESS", 
-            decision=dictamen.get("decision"),
-            producto=dictamen.get("producto"),
-            monto_maximo=dictamen.get("montoMaximo"), 
-            plazo_maximo=dictamen.get("plazoMaximo"),
-            capacidad_disponible=capacidad.get("capacidadDisponible"), 
-            resumen=(parsed.get("resumen") or "")[:300],
-            dictamen_completo=parsed, 
-            latency_ms=total_ms, 
-            audit_id=audit_id
+            transaction_id=txn_id, status="SUCCESS", decision=dictamen.get("decision"),
+            producto=dictamen.get("producto"), monto_maximo=dictamen.get("montoMaximo"),
+            plazo_maximo=dictamen.get("plazoMaximo"), capacidad_disponible=capacidad.get("capacidadDisponible"),
+            resumen=(parsed.get("resumen") or "")[:300], dictamen_completo=parsed,
+            latency_ms=total_ms, audit_id=audit_id
         )
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
         total_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-        
-        audit_id = None
         if audit and db:
             audit.latency_total_ms = total_ms
             audit.status = "ERROR"
             audit.error_message = str(e)
             db.add(audit)
             db.commit()
-            db.refresh(audit)
-            audit_id = audit.id
-        
-        return ValidationResponse(
-            transaction_id=txn_id, 
-            status="ERROR", 
-            error=str(e), 
-            latency_ms=total_ms, 
-            audit_id=audit_id
-        )
+        return ValidationResponse(transaction_id=txn_id, status="ERROR", error=str(e), latency_ms=total_ms)
     finally:
         if db:
             db.close()
@@ -603,53 +491,14 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
 
 @app.get("/api/v1/audit/{transaction_id}")
 def get_audit(transaction_id: str, api_key: str = Depends(verify_api_key)):
-    if not SessionLocal or not CreditValidationAudit:
+    if not SessionLocal:
         raise HTTPException(status_code=500, detail="Database not configured")
-    
     db = SessionLocal()
     try:
-        audits = db.query(CreditValidationAudit).filter(
-            CreditValidationAudit.transaction_id == transaction_id
-        ).order_by(CreditValidationAudit.created_at.desc()).all()
-        
+        audits = db.query(CreditValidationAudit).filter(CreditValidationAudit.transaction_id == transaction_id).all()
         if not audits:
-            raise HTTPException(status_code=404, detail="No audit records found")
-        
-        return {
-            "transaction_id": transaction_id,
-            "total": len(audits),
-            "audits": [{"id": a.id, "decision": a.decision, "status": a.status, "latency_ms": a.latency_total_ms,
-                        "created_at": a.created_at.isoformat() if a.created_at else None} for a in audits]
-        }
+            raise HTTPException(status_code=404, detail="No records found")
+        return {"transaction_id": transaction_id, "total": len(audits),
+                "audits": [{"id": a.id, "decision": a.decision, "status": a.status} for a in audits]}
     finally:
         db.close()
-
-
-@app.get("/api/v1/audit/detail/{audit_id}")
-def get_audit_detail(audit_id: int, api_key: str = Depends(verify_api_key)):
-    if not SessionLocal or not CreditValidationAudit:
-        raise HTTPException(status_code=500, detail="Database not configured")
-    
-    db = SessionLocal()
-    try:
-        audit = db.query(CreditValidationAudit).filter(CreditValidationAudit.id == audit_id).first()
-        if not audit:
-            raise HTTPException(status_code=404, detail="Audit not found")
-        
-        return {
-            "id": audit.id, "transaction_id": audit.transaction_id, "person_id": audit.person_id,
-            "decision": audit.decision, "producto": audit.producto, "monto_maximo": audit.monto_maximo,
-            "capacidad_disponible": audit.capacidad_disponible, "resumen": audit.resumen,
-            "dictamen_completo": audit.claude_response_parsed,
-            "metrics": {"tokens_input": audit.tokens_input, "tokens_output": audit.tokens_output,
-                        "latency_kala_api_ms": audit.latency_kala_api_ms, "latency_claude_ms": audit.latency_claude_ms,
-                        "latency_total_ms": audit.latency_total_ms},
-            "status": audit.status, "error": audit.error_message,
-            "created_at": audit.created_at.isoformat() if audit.created_at else None
-        }
-    finally:
-        db.close()
-
-
-# Vercel handler
-handler = Mangum(app, lifespan="off")
