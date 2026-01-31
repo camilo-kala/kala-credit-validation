@@ -1,8 +1,6 @@
 """
 KALA Credit Validation AI Agent - Vercel Serverless
 ====================================================
-
-FastAPI application adapted for Vercel serverless deployment with Neon PostgreSQL.
 """
 
 import os
@@ -12,16 +10,13 @@ import re
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from contextlib import asynccontextmanager
 
 import httpx
 import anthropic
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Boolean, JSON, select
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from mangum import Mangum
 
 # =============================================================================
@@ -31,11 +26,10 @@ from mangum import Mangum
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Environment variables
 KALA_API_BASE = os.getenv("KALA_API_BASE", "https://api.kalaplatform.tech")
 KALA_AUTH_EMAIL = os.getenv("KALA_AUTH_EMAIL")
 KALA_AUTH_PASSWORD = os.getenv("KALA_AUTH_PASSWORD")
-DATABASE_URL = os.getenv("DATABASE_URL")  # Neon connection string
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 API_KEY_SECRET = os.getenv("API_KEY_SECRET", "kala-credit-validation-api-key-2024")
@@ -44,71 +38,69 @@ MAX_CLAUDE_RETRIES = 2
 PROMPT_VERSION = "1.0.0"
 
 # =============================================================================
-# DATABASE SETUP (Synchronous for Vercel/Neon)
+# DATABASE SETUP (Only if DATABASE_URL is configured)
 # =============================================================================
 
-Base = declarative_base()
+engine = None
+SessionLocal = None
+CreditValidationAudit = None
+Base = None
 
-
-class CreditValidationAudit(Base):
-    """Audit table for credit validations."""
-    __tablename__ = "credit_validation_audit"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    transaction_id = Column(String(36), index=True, nullable=False)
-    person_id = Column(String(36), nullable=True)
-    
-    input_ocr = Column(JSON, nullable=True)
-    input_buro = Column(JSON, nullable=True)
-    input_truora = Column(JSON, nullable=True)
-    input_tasks = Column(JSON, nullable=True)
-    consolidated_prompt = Column(Text, nullable=True)
-    
-    claude_response_raw = Column(Text, nullable=True)
-    claude_response_parsed = Column(JSON, nullable=True)
-    
-    decision = Column(String(20), index=True, nullable=True)
-    producto = Column(String(30), nullable=True)
-    monto_maximo = Column(Float, nullable=True)
-    plazo_maximo = Column(Integer, nullable=True)
-    capacidad_disponible = Column(Float, nullable=True)
-    tiene_inaceptables = Column(Boolean, nullable=True)
-    cantidad_embargos = Column(Integer, nullable=True)
-    procesos_demandado_60m = Column(Integer, nullable=True)
-    resumen = Column(String(300), nullable=True)
-    
-    tokens_input = Column(Integer, nullable=True)
-    tokens_output = Column(Integer, nullable=True)
-    latency_kala_api_ms = Column(Integer, nullable=True)
-    latency_claude_ms = Column(Integer, nullable=True)
-    latency_total_ms = Column(Integer, nullable=True)
-    claude_retries = Column(Integer, default=0)
-    
-    model_version = Column(String(50), nullable=False)
-    prompt_version = Column(String(20), default="1.0.0")
-    status = Column(String(20), index=True, default="SUCCESS")
-    error_message = Column(Text, nullable=True)
-    
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    created_by = Column(String(100), nullable=True)
-
-
-# Database engine (sync for Vercel)
-if DATABASE_URL:
-    # Neon requires sslmode
-    db_url = DATABASE_URL
-    if "sslmode" not in db_url:
-        db_url = f"{db_url}?sslmode=require"
-    
-    engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300)
-    SessionLocal = sessionmaker(bind=engine)
-else:
-    engine = None
-    SessionLocal = None
+if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
+    try:
+        from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Boolean, JSON
+        from sqlalchemy.orm import declarative_base, sessionmaker
+        
+        Base = declarative_base()
+        
+        class CreditValidationAudit(Base):
+            __tablename__ = "credit_validation_audit"
+            id = Column(Integer, primary_key=True, autoincrement=True)
+            transaction_id = Column(String(36), index=True, nullable=False)
+            person_id = Column(String(36), nullable=True)
+            input_ocr = Column(JSON, nullable=True)
+            input_buro = Column(JSON, nullable=True)
+            input_truora = Column(JSON, nullable=True)
+            input_tasks = Column(JSON, nullable=True)
+            consolidated_prompt = Column(Text, nullable=True)
+            claude_response_raw = Column(Text, nullable=True)
+            claude_response_parsed = Column(JSON, nullable=True)
+            decision = Column(String(20), index=True, nullable=True)
+            producto = Column(String(30), nullable=True)
+            monto_maximo = Column(Float, nullable=True)
+            plazo_maximo = Column(Integer, nullable=True)
+            capacidad_disponible = Column(Float, nullable=True)
+            tiene_inaceptables = Column(Boolean, nullable=True)
+            cantidad_embargos = Column(Integer, nullable=True)
+            procesos_demandado_60m = Column(Integer, nullable=True)
+            resumen = Column(String(300), nullable=True)
+            tokens_input = Column(Integer, nullable=True)
+            tokens_output = Column(Integer, nullable=True)
+            latency_kala_api_ms = Column(Integer, nullable=True)
+            latency_claude_ms = Column(Integer, nullable=True)
+            latency_total_ms = Column(Integer, nullable=True)
+            claude_retries = Column(Integer, default=0)
+            model_version = Column(String(50), nullable=False)
+            prompt_version = Column(String(20), default="1.0.0")
+            status = Column(String(20), index=True, default="SUCCESS")
+            error_message = Column(Text, nullable=True)
+            created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+            created_by = Column(String(100), nullable=True)
+        
+        db_url = DATABASE_URL
+        if "sslmode" not in db_url:
+            db_url = f"{db_url}?sslmode=require"
+        
+        engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300)
+        SessionLocal = sessionmaker(bind=engine)
+        logger.info("Database configured successfully")
+    except Exception as e:
+        logger.error(f"Database configuration failed: {e}")
+        engine = None
+        SessionLocal = None
 
 
 def get_db():
-    """Get database session."""
     if not SessionLocal:
         raise HTTPException(status_code=500, detail="Database not configured")
     db = SessionLocal()
@@ -119,8 +111,7 @@ def get_db():
 
 
 def init_db():
-    """Initialize database tables."""
-    if engine:
+    if engine and Base:
         Base.metadata.create_all(bind=engine)
 
 
@@ -155,7 +146,7 @@ class HealthResponse(BaseModel):
 
 
 # =============================================================================
-# TOKEN CACHE (In-memory, resets per cold start)
+# TOKEN CACHE
 # =============================================================================
 
 class TokenCache:
@@ -218,7 +209,6 @@ class KalaAPIClient:
             token = self._ensure_token(client)
             auth_headers = {**self.headers, "Authorization": f"Bearer {token}"}
             
-            # Get tasks
             tasks_resp = client.get(
                 f"{self.base_url}/v2/task_inbox",
                 params={"transactionId": transaction_id, "namesFrom": "TRUORA, BURO, GENERAL"},
@@ -227,7 +217,6 @@ class KalaAPIClient:
             tasks_resp.raise_for_status()
             tasks_data = tasks_resp.json()
             
-            # Get person_id
             person_resp = client.get(
                 f"{self.base_url}/v2/person/transaction/{transaction_id}/applicant",
                 headers=auth_headers
@@ -238,7 +227,6 @@ class KalaAPIClient:
             if not person_id:
                 raise HTTPException(status_code=404, detail=f"Person not found for transaction {transaction_id}")
             
-            # Get external data (OCR, Buró, Truora)
             extdata_resp = client.get(
                 f"{self.base_url}/external_data/person/{person_id}",
                 headers=auth_headers
@@ -486,71 +474,103 @@ def startup():
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    db_status = "configured" if DATABASE_URL else "not_configured"
+    db_status = "configured" if engine else "not_configured"
     claude_status = "configured" if ANTHROPIC_API_KEY else "not_configured"
     return HealthResponse(status="healthy", version="1.0.0", database=db_status, claude_api=claude_status)
 
 
+@app.get("/")
+def root():
+    return {"message": "KALA Credit Validation API", "version": "1.0.0", "docs": "/docs"}
+
+
 @app.post("/api/v1/validate", response_model=ValidationResponse)
-def validate_credit(request: ValidationRequest, db: Session = Depends(get_db), api_key: str = Depends(verify_api_key)):
+def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_api_key)):
     start = datetime.now(timezone.utc)
     txn_id = request.transaction_id
     
-    audit = CreditValidationAudit(transaction_id=txn_id, model_version=CLAUDE_MODEL, prompt_version=PROMPT_VERSION, status="PROCESSING")
+    # Check if database is available
+    db = None
+    audit = None
+    if SessionLocal and CreditValidationAudit:
+        db = SessionLocal()
+        audit = CreditValidationAudit(
+            transaction_id=txn_id, 
+            model_version=CLAUDE_MODEL, 
+            prompt_version=PROMPT_VERSION, 
+            status="PROCESSING"
+        )
     
     try:
         # Get data from Kala
         data = kala_client.get_transaction_data(txn_id)
-        audit.person_id = data["person_id"]
-        audit.input_ocr = data["ocr"]
-        audit.input_buro = data["buro"]
-        audit.input_truora = data["truora"]
-        audit.input_tasks = data["tasks"]
-        audit.latency_kala_api_ms = data["latency_ms"]
+        
+        if audit:
+            audit.person_id = data["person_id"]
+            audit.input_ocr = data["ocr"]
+            audit.input_buro = data["buro"]
+            audit.input_truora = data["truora"]
+            audit.input_tasks = data["tasks"]
+            audit.latency_kala_api_ms = data["latency_ms"]
         
         # Consolidate
         consolidated = consolidate_data(txn_id, data["ocr"], data["buro"], data["truora"], data["tasks"])
-        audit.consolidated_prompt = json.dumps(consolidated, ensure_ascii=False)
+        
+        if audit:
+            audit.consolidated_prompt = json.dumps(consolidated, ensure_ascii=False)
         
         # Call Claude
         if not ANTHROPIC_API_KEY:
             raise HTTPException(status_code=500, detail="Claude API not configured")
         
         parsed, metrics = call_claude(consolidated)
-        audit.claude_response_raw = metrics["raw_response"]
-        audit.claude_response_parsed = parsed
-        audit.tokens_input = metrics["tokens_input"]
-        audit.tokens_output = metrics["tokens_output"]
-        audit.latency_claude_ms = metrics["latency_ms"]
-        audit.claude_retries = metrics["retries"]
+        
+        if audit:
+            audit.claude_response_raw = metrics["raw_response"]
+            audit.claude_response_parsed = parsed
+            audit.tokens_input = metrics["tokens_input"]
+            audit.tokens_output = metrics["tokens_output"]
+            audit.latency_claude_ms = metrics["latency_ms"]
+            audit.claude_retries = metrics["retries"]
         
         # Extract dictamen
         dictamen = parsed.get("dictamen", {})
         capacidad = parsed.get("capacidadPago", {})
         
-        audit.decision = dictamen.get("decision")
-        audit.producto = dictamen.get("producto")
-        audit.monto_maximo = dictamen.get("montoMaximo")
-        audit.plazo_maximo = dictamen.get("plazoMaximo")
-        audit.capacidad_disponible = capacidad.get("capacidadDisponible")
-        audit.tiene_inaceptables = parsed.get("inaceptables", {}).get("tiene", False)
-        audit.cantidad_embargos = parsed.get("embargos", {}).get("cantidadEnDesprendible", 0)
-        audit.procesos_demandado_60m = parsed.get("procesosJudiciales", {}).get("totalComoDemandado60m", 0)
-        audit.resumen = (parsed.get("resumen") or "")[:300]
+        if audit:
+            audit.decision = dictamen.get("decision")
+            audit.producto = dictamen.get("producto")
+            audit.monto_maximo = dictamen.get("montoMaximo")
+            audit.plazo_maximo = dictamen.get("plazoMaximo")
+            audit.capacidad_disponible = capacidad.get("capacidadDisponible")
+            audit.tiene_inaceptables = parsed.get("inaceptables", {}).get("tiene", False)
+            audit.cantidad_embargos = parsed.get("embargos", {}).get("cantidadEnDesprendible", 0)
+            audit.procesos_demandado_60m = parsed.get("procesosJudiciales", {}).get("totalComoDemandado60m", 0)
+            audit.resumen = (parsed.get("resumen") or "")[:300]
         
         total_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-        audit.latency_total_ms = total_ms
-        audit.status = "SUCCESS"
         
-        db.add(audit)
-        db.commit()
-        db.refresh(audit)
+        audit_id = None
+        if audit and db:
+            audit.latency_total_ms = total_ms
+            audit.status = "SUCCESS"
+            db.add(audit)
+            db.commit()
+            db.refresh(audit)
+            audit_id = audit.id
         
         return ValidationResponse(
-            transaction_id=txn_id, status="SUCCESS", decision=audit.decision, producto=audit.producto,
-            monto_maximo=audit.monto_maximo, plazo_maximo=audit.plazo_maximo,
-            capacidad_disponible=audit.capacidad_disponible, resumen=audit.resumen,
-            dictamen_completo=parsed, latency_ms=total_ms, audit_id=audit.id
+            transaction_id=txn_id, 
+            status="SUCCESS", 
+            decision=dictamen.get("decision"),
+            producto=dictamen.get("producto"),
+            monto_maximo=dictamen.get("montoMaximo"), 
+            plazo_maximo=dictamen.get("plazoMaximo"),
+            capacidad_disponible=capacidad.get("capacidadDisponible"), 
+            resumen=(parsed.get("resumen") or "")[:300],
+            dictamen_completo=parsed, 
+            latency_ms=total_ms, 
+            audit_id=audit_id
         )
     
     except HTTPException:
@@ -558,49 +578,77 @@ def validate_credit(request: ValidationRequest, db: Session = Depends(get_db), a
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         total_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-        audit.latency_total_ms = total_ms
-        audit.status = "ERROR"
-        audit.error_message = str(e)
-        db.add(audit)
-        db.commit()
-        db.refresh(audit)
-        return ValidationResponse(transaction_id=txn_id, status="ERROR", error=str(e), latency_ms=total_ms, audit_id=audit.id)
+        
+        audit_id = None
+        if audit and db:
+            audit.latency_total_ms = total_ms
+            audit.status = "ERROR"
+            audit.error_message = str(e)
+            db.add(audit)
+            db.commit()
+            db.refresh(audit)
+            audit_id = audit.id
+        
+        return ValidationResponse(
+            transaction_id=txn_id, 
+            status="ERROR", 
+            error=str(e), 
+            latency_ms=total_ms, 
+            audit_id=audit_id
+        )
+    finally:
+        if db:
+            db.close()
 
 
 @app.get("/api/v1/audit/{transaction_id}")
-def get_audit(transaction_id: str, db: Session = Depends(get_db), api_key: str = Depends(verify_api_key)):
-    audits = db.query(CreditValidationAudit).filter(
-        CreditValidationAudit.transaction_id == transaction_id
-    ).order_by(CreditValidationAudit.created_at.desc()).all()
+def get_audit(transaction_id: str, api_key: str = Depends(verify_api_key)):
+    if not SessionLocal or not CreditValidationAudit:
+        raise HTTPException(status_code=500, detail="Database not configured")
     
-    if not audits:
-        raise HTTPException(status_code=404, detail="No audit records found")
-    
-    return {
-        "transaction_id": transaction_id,
-        "total": len(audits),
-        "audits": [{"id": a.id, "decision": a.decision, "status": a.status, "latency_ms": a.latency_total_ms,
-                    "created_at": a.created_at.isoformat() if a.created_at else None} for a in audits]
-    }
+    db = SessionLocal()
+    try:
+        audits = db.query(CreditValidationAudit).filter(
+            CreditValidationAudit.transaction_id == transaction_id
+        ).order_by(CreditValidationAudit.created_at.desc()).all()
+        
+        if not audits:
+            raise HTTPException(status_code=404, detail="No audit records found")
+        
+        return {
+            "transaction_id": transaction_id,
+            "total": len(audits),
+            "audits": [{"id": a.id, "decision": a.decision, "status": a.status, "latency_ms": a.latency_total_ms,
+                        "created_at": a.created_at.isoformat() if a.created_at else None} for a in audits]
+        }
+    finally:
+        db.close()
 
 
 @app.get("/api/v1/audit/detail/{audit_id}")
-def get_audit_detail(audit_id: int, db: Session = Depends(get_db), api_key: str = Depends(verify_api_key)):
-    audit = db.query(CreditValidationAudit).filter(CreditValidationAudit.id == audit_id).first()
-    if not audit:
-        raise HTTPException(status_code=404, detail="Audit not found")
+def get_audit_detail(audit_id: int, api_key: str = Depends(verify_api_key)):
+    if not SessionLocal or not CreditValidationAudit:
+        raise HTTPException(status_code=500, detail="Database not configured")
     
-    return {
-        "id": audit.id, "transaction_id": audit.transaction_id, "person_id": audit.person_id,
-        "decision": audit.decision, "producto": audit.producto, "monto_maximo": audit.monto_maximo,
-        "capacidad_disponible": audit.capacidad_disponible, "resumen": audit.resumen,
-        "dictamen_completo": audit.claude_response_parsed,
-        "metrics": {"tokens_input": audit.tokens_input, "tokens_output": audit.tokens_output,
-                    "latency_kala_api_ms": audit.latency_kala_api_ms, "latency_claude_ms": audit.latency_claude_ms,
-                    "latency_total_ms": audit.latency_total_ms},
-        "status": audit.status, "error": audit.error_message,
-        "created_at": audit.created_at.isoformat() if audit.created_at else None
-    }
+    db = SessionLocal()
+    try:
+        audit = db.query(CreditValidationAudit).filter(CreditValidationAudit.id == audit_id).first()
+        if not audit:
+            raise HTTPException(status_code=404, detail="Audit not found")
+        
+        return {
+            "id": audit.id, "transaction_id": audit.transaction_id, "person_id": audit.person_id,
+            "decision": audit.decision, "producto": audit.producto, "monto_maximo": audit.monto_maximo,
+            "capacidad_disponible": audit.capacidad_disponible, "resumen": audit.resumen,
+            "dictamen_completo": audit.claude_response_parsed,
+            "metrics": {"tokens_input": audit.tokens_input, "tokens_output": audit.tokens_output,
+                        "latency_kala_api_ms": audit.latency_kala_api_ms, "latency_claude_ms": audit.latency_claude_ms,
+                        "latency_total_ms": audit.latency_total_ms},
+            "status": audit.status, "error": audit.error_message,
+            "created_at": audit.created_at.isoformat() if audit.created_at else None
+        }
+    finally:
+        db.close()
 
 
 # Vercel handler
