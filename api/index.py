@@ -14,6 +14,7 @@ import httpx
 import anthropic
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -308,7 +309,7 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
 # =============================================================================
 
 SYSTEM_PROMPT = """# ROL
-Eres analista de crédito de KALA. Evalúas solicitudes de libranza para pensionados.
+Eres analista de cr��dito de KALA. Evalúas solicitudes de libranza para pensionados.
 
 # REGLA FUNDAMENTAL
 NO hagas inferencias sobre atributos NO regulados. Solo rechaza por criterios EXPLÍCITOS.
@@ -397,8 +398,22 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 kala_client = KalaAPIClient()
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def root():
+    """Serve the landing page with API documentation"""
+    import os
+    static_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    try:
+        with open(static_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        # Fallback to JSON response if HTML file is not found
+        return {"message": "KALA Credit Validation API", "version": "1.0.0"}
+
+
+@app.get("/api")
+def api_root():
+    """JSON endpoint for API information"""
     return {"message": "KALA Credit Validation API", "version": "1.0.0"}
 
 
