@@ -1,6 +1,5 @@
 """
 KALA Credit Validation AI Agent - Vercel Serverless
-WITH VERBOSE LOGGING FOR DEBUGGING
 """
 
 import os
@@ -14,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 # =============================================================================
-# VERBOSE LOGGING SETUP
+# LOGGING
 # =============================================================================
 
 logging.basicConfig(
@@ -23,14 +22,13 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("kala-credit-validation")
-logger.setLevel(logging.DEBUG)
 
 logger.info("=" * 60)
 logger.info("STARTING KALA CREDIT VALIDATION API")
 logger.info("=" * 60)
 
 # =============================================================================
-# CONFIGURATION WITH LOGGING
+# CONFIGURATION
 # =============================================================================
 
 KALA_API_BASE = os.getenv("KALA_API_BASE", "https://api.kalaplatform.tech")
@@ -41,16 +39,13 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 API_KEY_SECRET = os.getenv("API_KEY_SECRET", "kala-credit-validation-api-key-2024")
 
-logger.info("ENVIRONMENT VARIABLES CHECK:")
-logger.info(f"  KALA_API_BASE: {KALA_API_BASE}")
+logger.info("ENV CHECK:")
 logger.info(f"  KALA_AUTH_EMAIL: {'SET' if KALA_AUTH_EMAIL else 'NOT SET'}")
-logger.info(f"  KALA_AUTH_PASSWORD: {'SET' if KALA_AUTH_PASSWORD else 'NOT SET'}")
 logger.info(f"  DATABASE_URL: {'SET' if DATABASE_URL else 'NOT SET'}")
-logger.info(f"  ANTHROPIC_API_KEY: {'SET (' + ANTHROPIC_API_KEY[:15] + '...)' if ANTHROPIC_API_KEY else 'NOT SET'}")
-logger.info(f"  CLAUDE_MODEL: {CLAUDE_MODEL}")
+logger.info(f"  ANTHROPIC_API_KEY: {'SET' if ANTHROPIC_API_KEY else 'NOT SET'}")
 
 MAX_CLAUDE_RETRIES = 2
-PROMPT_VERSION = "1.0.0"
+PROMPT_VERSION = "1.0.1"
 
 # =============================================================================
 # IMPORTS
@@ -62,8 +57,6 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
-
-logger.info("All dependencies imported successfully")
 
 # =============================================================================
 # DATABASE SETUP
@@ -126,10 +119,6 @@ if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
         
     except Exception as e:
         logger.error(f"Database configuration failed: {e}")
-        engine = None
-        SessionLocal = None
-else:
-    logger.warning(f"Database not configured. URL starts with: {DATABASE_URL[:20] if DATABASE_URL else 'EMPTY'}")
 
 
 # =============================================================================
@@ -231,7 +220,6 @@ class KalaAPIClient:
             token = self._ensure_token(client)
             auth_headers = {**self.headers, "Authorization": f"Bearer {token}"}
             
-            # Tasks
             tasks_resp = client.get(
                 f"{self.base_url}/v2/task_inbox",
                 params={"transactionId": transaction_id, "namesFrom": "TRUORA, BURO, GENERAL"},
@@ -239,9 +227,7 @@ class KalaAPIClient:
             )
             tasks_resp.raise_for_status()
             tasks_data = tasks_resp.json()
-            logger.info(f"✓ Tasks fetched")
             
-            # Person
             person_resp = client.get(
                 f"{self.base_url}/v2/person/transaction/{transaction_id}/applicant",
                 headers=auth_headers
@@ -251,18 +237,16 @@ class KalaAPIClient:
             
             if not person_id:
                 raise HTTPException(status_code=404, detail=f"Person not found")
-            logger.info(f"✓ Person ID: {person_id}")
             
-            # External data
             extdata_resp = client.get(
                 f"{self.base_url}/external_data/person/{person_id}",
                 headers=auth_headers
             )
             extdata_resp.raise_for_status()
             extdata = extdata_resp.json()
-            logger.info(f"✓ External data fetched")
         
         elapsed_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+        logger.info(f"✓ Kala data fetched in {elapsed_ms}ms")
         
         ocr = extdata.get("summaryTrebolOcr")
         buro = extdata.get("customSummaryBuro")
@@ -283,69 +267,37 @@ class KalaAPIClient:
 
 
 # =============================================================================
-# SAFE DATA EXTRACTION HELPERS
+# SAFE DATA HELPERS
 # =============================================================================
 
 def safe_get(obj, key, default=None):
-    """Safely get a value from dict or return default."""
     if isinstance(obj, dict):
         return obj.get(key, default)
     return default
 
-
 def safe_str(value, default=""):
-    """Safely convert to string."""
-    if value is None:
-        return default
-    return str(value)
-
+    return str(value) if value is not None else default
 
 def safe_int(value, default=0):
-    """Safely convert to int."""
     try:
-        if value is None:
-            return default
-        return int(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def safe_float(value, default=0.0):
-    """Safely convert to float."""
-    try:
-        if value is None:
-            return default
-        return float(value)
+        return int(value) if value is not None else default
     except (ValueError, TypeError):
         return default
 
 
 # =============================================================================
-# DATA CONSOLIDATION (FIXED)
+# DATA CONSOLIDATION
 # =============================================================================
 
 def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: list) -> dict:
-    logger.debug("Consolidating data for Claude...")
+    logger.debug("Consolidating data...")
     
-    # OCR data extraction
     ocr_doc = ocr[0] if ocr and len(ocr) > 0 else {}
-    logger.debug(f"  OCR doc type: {type(ocr_doc)}")
-    
-    if isinstance(ocr_doc, dict):
-        std = ocr_doc.get("standardizedData", {})
-    else:
-        std = {}
-        logger.warning(f"  OCR doc is not a dict, it's: {type(ocr_doc)}")
-    
+    std = safe_get(ocr_doc, "standardizedData", {}) if isinstance(ocr_doc, dict) else {}
     salary = safe_get(std, "salary_info", {})
     personal = safe_get(std, "personal_info", {})
     employment = safe_get(std, "employment_info", {})
     
-    logger.debug(f"  salary type: {type(salary)}")
-    logger.debug(f"  personal type: {type(personal)}")
-    logger.debug(f"  employment type: {type(employment)}")
-    
-    # Pagaduría
     pagaduria = safe_get(employment, "company_name") or safe_get(employment, "employer_name") or "DESCONOCIDA"
     pagaduria = safe_str(pagaduria, "DESCONOCIDA")
     
@@ -356,86 +308,64 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
             pag_type = t
             break
     
-    logger.info(f"  Pagaduría: {pagaduria} (type: {pag_type})")
+    logger.info(f"  Pagaduría: {pagaduria} ({pag_type})")
     
-    # Deductions - handle different data formats
+    # Deductions
     deductions_raw = safe_get(salary, "deduction_details", [])
-    logger.debug(f"  deductions_raw type: {type(deductions_raw)}, len: {len(deductions_raw) if isinstance(deductions_raw, list) else 'N/A'}")
-    
     deductions = []
     libranzas_ocr = []
     embargos_ocr = []
     
     if isinstance(deductions_raw, list):
-        for i, d in enumerate(deductions_raw):
-            logger.debug(f"    deduction[{i}] type: {type(d)}, value: {str(d)[:100]}")
-            
-            # Handle dict format
+        for d in deductions_raw:
             if isinstance(d, dict):
                 desc = safe_str(d.get("description"), "")
                 amount = d.get("amount")
-                deductions.append({"description": desc, "amount": amount})
-                
-                desc_upper = desc.upper()
-                if any(k in desc_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
-                    libranzas_ocr.append({"descripcion": desc, "monto": amount})
-                if "EMBARGO" in desc_upper:
-                    embargos_ocr.append({"descripcion": desc, "monto": amount})
-            
-            # Handle string format
             elif isinstance(d, str):
-                deductions.append({"description": d, "amount": None})
-                d_upper = d.upper()
-                if any(k in d_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
-                    libranzas_ocr.append({"descripcion": d, "monto": None})
-                if "EMBARGO" in d_upper:
-                    embargos_ocr.append({"descripcion": d, "monto": None})
-            
-            # Handle other formats
+                desc = d
+                amount = None
             else:
-                logger.warning(f"    Unknown deduction format: {type(d)}")
-                deductions.append({"description": str(d), "amount": None})
+                desc = str(d)
+                amount = None
+            
+            deductions.append({"description": desc, "amount": amount})
+            desc_upper = desc.upper()
+            
+            if any(k in desc_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
+                libranzas_ocr.append({"descripcion": desc, "monto": amount})
+            if "EMBARGO" in desc_upper:
+                embargos_ocr.append({"descripcion": desc, "monto": amount})
     
     logger.info(f"  Deductions: {len(deductions)}, Libranzas: {len(libranzas_ocr)}, Embargos: {len(embargos_ocr)}")
     
     # Buró loans
     loans_buro = []
-    outstanding_loans = safe_get(buro, "outstandingLoans", [])
-    
-    if isinstance(outstanding_loans, list):
-        for loan in outstanding_loans:
-            if isinstance(loan, dict):
-                acc = safe_get(loan, "accounts", {})
-                if isinstance(acc, dict):
-                    loans_buro.append({
-                        "entity": safe_get(acc, "lenderName"),
-                        "type": safe_get(acc, "accountType"),
-                        "debt": safe_int(safe_get(acc, "totalDebt")),
-                        "installment": safe_int(safe_get(acc, "installments")),
-                        "isLibranza": safe_get(acc, "typePayrollDeductionLoan"),
-                        "pastDueMax": safe_get(acc, "pastDueMax"),
-                        "paymentBehavior12m": safe_str(safe_get(acc, "paymentBehavior"))[:12],
-                        "sector": safe_get(acc, "sector")
-                    })
-    
-    logger.info(f"  Loans Buró: {len(loans_buro)}")
-    
-    # Truora processes
-    enrichment = safe_get(truora, "enrichment", {})
-    processes_raw = safe_get(enrichment, "processes", [])
-    processes = []
-    
-    if isinstance(processes_raw, list):
-        for p in processes_raw:
-            if isinstance(p, dict):
-                processes.append({
-                    "entity": safe_get(p, "entity"),
-                    "roleDefendant": safe_get(p, "roleDefendant"),
-                    "processOpen": safe_get(p, "processOpen"),
-                    "processType": safe_get(p, "processType")
+    for loan in safe_get(buro, "outstandingLoans", []) or []:
+        if isinstance(loan, dict):
+            acc = safe_get(loan, "accounts", {})
+            if isinstance(acc, dict):
+                loans_buro.append({
+                    "entity": safe_get(acc, "lenderName"),
+                    "type": safe_get(acc, "accountType"),
+                    "debt": safe_int(safe_get(acc, "totalDebt")),
+                    "installment": safe_int(safe_get(acc, "installments")),
+                    "isLibranza": safe_get(acc, "typePayrollDeductionLoan"),
+                    "pastDueMax": safe_get(acc, "pastDueMax"),
+                    "paymentBehavior12m": safe_str(safe_get(acc, "paymentBehavior"))[:12],
+                    "sector": safe_get(acc, "sector")
                 })
     
-    logger.info(f"  Processes Truora: {len(processes)}")
+    # Truora
+    enrichment = safe_get(truora, "enrichment", {})
+    processes = []
+    for p in safe_get(enrichment, "processes", []) or []:
+        if isinstance(p, dict):
+            processes.append({
+                "entity": safe_get(p, "entity"),
+                "roleDefendant": safe_get(p, "roleDefendant"),
+                "processOpen": safe_get(p, "processOpen"),
+                "processType": safe_get(p, "processType")
+            })
     
     # Tasks
     tasks_processed = []
@@ -448,7 +378,7 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
                     "allValidated": safe_get(t, "allTaskValidated")
                 })
     
-    logger.info("✓ Data consolidated successfully")
+    logger.info("✓ Data consolidated")
     
     return {
         "txn": txn_id,
@@ -456,10 +386,7 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
             "personal": personal if isinstance(personal, dict) else {},
             "pagaduria": pagaduria,
             "pagaduriaType": pag_type,
-            "salary": {
-                "gross": safe_get(salary, "gross_salary"),
-                "net": safe_get(salary, "net_salary")
-            },
+            "salary": {"gross": safe_get(salary, "gross_salary"), "net": safe_get(salary, "net_salary")},
             "deductions": deductions,
             "libranzasIdentificadas": libranzas_ocr,
             "embargos": embargos_ocr,
@@ -484,7 +411,7 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
 
 
 # =============================================================================
-# SYSTEM PROMPT
+# SYSTEM PROMPT (CORREGIDO - SARLAFT)
 # =============================================================================
 
 SYSTEM_PROMPT = """# ROL
@@ -493,30 +420,98 @@ Eres analista de crédito de KALA. Evalúas solicitudes de libranza para pension
 # REGLA FUNDAMENTAL
 NO hagas inferencias sobre atributos NO regulados. Solo rechaza por criterios EXPLÍCITOS.
 
-# CLIENTES INACEPTABLES
+# INTERPRETACIÓN DE SARLAFT
+- sarlaftCompliance = true → Cliente SÍ ESTÁ en listas restrictivas → RECHAZAR
+- sarlaftCompliance = false → Cliente NO está en listas restrictivas → OK, puede continuar
+- sarlaftCompliance = null → No se pudo validar → Requiere validación manual
+
+# CLIENTES INACEPTABLES (Rechazo inmediato si cumple CUALQUIERA)
 - Ingreso < 1 SMMLV (~$1,300,000)
-- Listas restrictivas (SARLAFT false)
-- Fallecidos en buró
-- 5+ procesos ejecutivos como DEMANDADO (últimos 60 meses)
-- >1 embargo en desprendible
+- sarlaftCompliance = true (está en listas restrictivas)
+- Figuran como fallecidos en buró
+- 5+ procesos ejecutivos activos como DEMANDADO (últimos 60 meses)
+- Procesos penales activos con condena
+- >1 embargo en desprendible de nómina
 
-# CAPACIDAD DE PAGO
-Capacidad = (Pensión Bruta / 2) - Descuentos de ley - Descuentos libranza - Resguardo($2,500)
+# ELEGIBILIDAD
+- Edad: 18-90 años
+- Monto máximo: $120M (hasta 80 años), $20M (81-90 años)
+- Ingreso mínimo: 1 SMMLV
 
-# FORMATO JSON
+# EMBARGOS
+- >1 embargo en desprendible = NO sujeto de crédito
+- CASUR/CREMIL: castigo 10% sobre valor embargo
+
+# CAPACIDAD DE PAGO (Ley 1527)
+COLPENSIONES y otras (excepto CASUR/CREMIL):
+  Capacidad = (Pensión Bruta / 2) - Descuentos de ley - Descuentos libranza - Resguardo($2,500)
+
+CASUR:
+  Capacidad = (Pensión Bruta - 4%CSREJECUT - 1%CASURAUTOM) / 2 - Otros descuentos - Resguardo($6,000)
+
+CREMIL:
+  Capacidad = (Pensión Bruta / 2) - Todos los descuentos - Resguardo($6,000)
+
+# PROCESOS JUDICIALES
+- Solo cuentan procesos donde cliente sea DEMANDADO (roleDefendant = true)
+- Solo últimos 60 meses con movimiento
+- Excluir procesos tipo Declarativo
+- 5+ procesos ejecutivos como demandado = INACEPTABLE
+
+# FORMATO RESPUESTA JSON
 ```json
 {
   "txn": "string",
-  "solicitante": {"nombre": "string", "cc": "string", "pagaduria": "string", "pagaduriaType": "string", "pensionBruta": 0, "pensionNeta": 0},
-  "inaceptables": {"tiene": false, "criterios": []},
-  "embargos": {"cantidadEnDesprendible": 0, "excedeLimite": false},
-  "procesosJudiciales": {"totalComoDemandado60m": 0, "excedeLimite5": false},
-  "capacidadPago": {"pensionBruta": 0, "base50pct": 0, "descuentosLey": 0, "descuentosLibranza": 0, "resguardo": 0, "capacidadDisponible": 0},
-  "dictamen": {"decision": "APROBADO|CONDICIONADO|RECHAZADO", "producto": "LIBRE_INVERSION|COMPRA_CARTERA|AMBOS|NO_APLICA", "montoMaximo": 0, "plazoMaximo": 144, "condiciones": [], "motivosRechazo": []},
+  "solicitante": {
+    "nombre": "string",
+    "cc": "string", 
+    "pagaduria": "string",
+    "pagaduriaType": "COLPENSIONES|FOPEP|CASUR|CREMIL|OTRAS",
+    "pensionBruta": 0,
+    "pensionNeta": 0
+  },
+  "inaceptables": {
+    "tiene": false,
+    "criterios": []
+  },
+  "sarlaft": {
+    "valor": null,
+    "interpretacion": "NO_EN_LISTAS|EN_LISTAS|NO_VALIDADO",
+    "esInaceptable": false
+  },
+  "embargos": {
+    "cantidadEnDesprendible": 0,
+    "excedeLimite": false,
+    "detalle": []
+  },
+  "procesosJudiciales": {
+    "totalComoDemandado60m": 0,
+    "excedeLimite5": false,
+    "procesosRelevantes": []
+  },
+  "capacidadPago": {
+    "formulaAplicada": "string",
+    "pensionBruta": 0,
+    "base50pct": 0,
+    "descuentosLey": 0,
+    "descuentosLibranza": 0,
+    "resguardo": 0,
+    "capacidadDisponible": 0
+  },
+  "dictamen": {
+    "decision": "APROBADO|CONDICIONADO|RECHAZADO",
+    "producto": "LIBRE_INVERSION|COMPRA_CARTERA|AMBOS|NO_APLICA",
+    "montoMaximo": 0,
+    "plazoMaximo": 144,
+    "condiciones": [],
+    "motivosRechazo": [],
+    "alertas": []
+  },
   "resumen": "string max 250 chars"
 }
 ```
-Responde ÚNICAMENTE JSON válido."""
+
+Responde ÚNICAMENTE JSON válido, sin texto adicional."""
 
 
 # =============================================================================
@@ -551,14 +546,13 @@ def call_claude(consolidated: dict) -> tuple[dict, dict]:
                 "retries": attempt
             })
             
-            logger.info(f"✓ Claude responded in {elapsed}ms (tokens: {response.usage.input_tokens}/{response.usage.output_tokens})")
+            logger.info(f"✓ Claude responded in {elapsed}ms")
             
             match = re.search(r'\{[\s\S]*\}', raw)
             if match:
-                parsed = json.loads(match.group())
-                return parsed, metrics
+                return json.loads(match.group()), metrics
             
-            raise ValueError("No JSON found in response")
+            raise ValueError("No JSON found")
             
         except Exception as e:
             logger.error(f"Claude attempt {attempt + 1} failed: {e}")
@@ -584,7 +578,7 @@ def verify_api_key(api_key: str = Depends(api_key_header)) -> str:
 # FASTAPI APP
 # =============================================================================
 
-app = FastAPI(title="KALA Credit Validation", version="1.0.0")
+app = FastAPI(title="KALA Credit Validation", version="1.0.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 kala_client = KalaAPIClient()
@@ -592,30 +586,17 @@ kala_client = KalaAPIClient()
 
 @app.get("/")
 def root():
-    return {"message": "KALA Credit Validation API", "version": "1.0.0"}
+    return {"message": "KALA Credit Validation API", "version": "1.0.1", "prompt_version": PROMPT_VERSION}
 
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    db_format = "not_set"
-    if DATABASE_URL:
-        if DATABASE_URL.startswith("postgresql://"):
-            db_format = "valid"
-        else:
-            db_format = f"INVALID - starts with '{DATABASE_URL[:15]}...'"
-    
-    claude_format = "not_set"
-    if ANTHROPIC_API_KEY:
-        if ANTHROPIC_API_KEY.startswith("sk-ant-"):
-            claude_format = "valid"
-        elif ANTHROPIC_API_KEY.startswith("eyJ"):
-            claude_format = "INVALID - looks like JWT"
-        else:
-            claude_format = f"UNKNOWN - starts with '{ANTHROPIC_API_KEY[:10]}...'"
+    db_format = "valid" if DATABASE_URL.startswith("postgresql://") else ("INVALID" if DATABASE_URL else "not_set")
+    claude_format = "valid" if ANTHROPIC_API_KEY.startswith("sk-ant-") else ("JWT_INVALID" if ANTHROPIC_API_KEY.startswith("eyJ") else ("not_set" if not ANTHROPIC_API_KEY else "unknown"))
     
     return HealthResponse(
         status="healthy" if engine else "degraded",
-        version="1.0.0",
+        version="1.0.1",
         database="configured" if engine else "NOT configured",
         database_url_format=db_format,
         claude_api="configured" if ANTHROPIC_API_KEY else "NOT configured",
@@ -626,9 +607,7 @@ def health_check():
 
 @app.post("/api/v1/validate", response_model=ValidationResponse)
 def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_api_key)):
-    logger.info("=" * 60)
     logger.info(f"VALIDATE: {request.transaction_id}")
-    logger.info("=" * 60)
     
     start = datetime.now(timezone.utc)
     txn_id = request.transaction_id
@@ -669,6 +648,8 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
             audit.producto = dictamen.get("producto")
             audit.monto_maximo = dictamen.get("montoMaximo")
             audit.capacidad_disponible = capacidad.get("capacidadDisponible")
+            audit.tiene_inaceptables = parsed.get("inaceptables", {}).get("tiene", False)
+            audit.cantidad_embargos = parsed.get("embargos", {}).get("cantidadEnDesprendible", 0)
         
         total_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
         
@@ -681,7 +662,7 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
             db.refresh(audit)
             audit_id = audit.id
         
-        logger.info(f"✓ COMPLETE: {dictamen.get('decision')} in {total_ms}ms")
+        logger.info(f"✓ {dictamen.get('decision')} in {total_ms}ms")
         
         return ValidationResponse(
             transaction_id=txn_id, status="SUCCESS", decision=dictamen.get("decision"),
@@ -694,7 +675,7 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"FAILED: {type(e).__name__}: {e}")
+        logger.error(f"FAILED: {e}")
         logger.error(traceback.format_exc())
         
         total_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
@@ -720,7 +701,7 @@ def get_audit(transaction_id: str, api_key: str = Depends(verify_api_key)):
         if not audits:
             raise HTTPException(status_code=404, detail="No records found")
         return {"transaction_id": transaction_id, "total": len(audits),
-                "audits": [{"id": a.id, "decision": a.decision, "status": a.status} for a in audits]}
+                "audits": [{"id": a.id, "decision": a.decision, "status": a.status, "created_at": a.created_at.isoformat() if a.created_at else None} for a in audits]}
     finally:
         db.close()
 
