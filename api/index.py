@@ -391,6 +391,38 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
                 })
     
     logger.info(f"  Tasks: {len(tasks_processed)}")
+    
+    # =========================================================================
+    # PRE-PROCESAMIENTO TRUORA: Conteo de procesos judiciales
+    # Fuente ÚNICA: enrichment.processes[] (NUNCA backgroundCheckDetails)
+    # Conteo: número de ELEMENTOS en el array filtrado, NO sumar repetitionCount
+    # =========================================================================
+    truora_enrichment = safe_get(truora, "enrichment", {}) if isinstance(truora, dict) else {}
+    truora_processes = truora_enrichment.get("processes", []) if isinstance(truora_enrichment, dict) else []
+    
+    procesos_activos_demandado = []
+    for proc in truora_processes:
+        if not isinstance(proc, dict):
+            continue
+        if proc.get("processOpen") == True and proc.get("roleDefendant") == True:
+            procesos_activos_demandado.append({
+                "processNumber": proc.get("processNumber"),
+                "processOpen": True,
+                "roleDefendant": True,
+                "lastProcessDate": proc.get("lastProcessDate"),
+                "repetitionCount": proc.get("repetitionCount"),  # info only, NOT for counting
+            })
+    
+    conteo_procesos = len(procesos_activos_demandado)
+    
+    logger.info(f"  Truora processes (enrichment): {len(truora_processes)} total, {conteo_procesos} active+defendant")
+    
+    truora_precalc = {
+        "conteo_procesos_activos_demandado": conteo_procesos,
+        "procesos_activos_demandado": procesos_activos_demandado,
+        "nota": "Este conteo ya está calculado por el sistema. Cada ELEMENTO = 1 proceso. NO sumar repetitionCount."
+    }
+    
     logger.info("✓ Data consolidated")
     
     return {
@@ -421,6 +453,9 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
         
         # TRUORA - Datos completos
         "truora": truora,
+        
+        # TRUORA PRE-CALCULADO - Conteo autoritativo de procesos
+        "truora_precalc": truora_precalc,
         
         # TASKS - Para validación de gaps
         "tasks": tasks_processed
@@ -491,7 +526,7 @@ def verify_api_key(api_key: str = Depends(api_key_header)) -> str:
 # FASTAPI APP
 # =============================================================================
 
-app = FastAPI(title="KALA Credit Validation", version="1.3.4")
+app = FastAPI(title="KALA Credit Validation", version="1.4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 kala_client = KalaAPIClient()
@@ -501,7 +536,7 @@ kala_client = KalaAPIClient()
 def root():
     return {
         "message": "KALA Credit Validation API", 
-        "version": "1.3.4", 
+        "version": "1.4.0", 
         "prompt_version": PROMPT_VERSION
     }
 
