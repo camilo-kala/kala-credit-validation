@@ -304,20 +304,19 @@ def safe_float(value, default=0.0):
 
 
 # =============================================================================
-# DATA CONSOLIDATION - SENDS COMPLETE DATA TO CLAUDE
+# DATA CONSOLIDATION
 # =============================================================================
 
 def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: list) -> dict:
     """
     Consolida los datos de OCR, Buró y Truora para enviar a Claude.
-    Envía los datos COMPLETOS para que Claude pueda interpretarlos usando el diccionario del prompt.
+    Envía datos COMPLETOS + resumen procesado sin duplicaciones.
     """
     logger.debug("Consolidating data...")
     
-    # Tomar el primer documento OCR (o combinar si hay múltiples)
     ocr_docs = ocr if isinstance(ocr, list) else [ocr] if ocr else []
     
-    # Extraer info del primer OCR para resumen rápido
+    # Extraer info del primer OCR (más reciente)
     ocr_primary = ocr_docs[0] if ocr_docs else {}
     std = safe_get(ocr_primary, "standardizedData", {}) if isinstance(ocr_primary, dict) else {}
     salary = safe_get(std, "salary_info", {})
@@ -337,29 +336,28 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
     
     logger.info(f"  Pagaduría: {pagaduria} ({pag_type})")
     
-    # Procesar deduction_details - puede ser dict o lista
+    # Procesar deduction_details - SOLO desde deduction_details, NO duplicar con credits
     deduction_details = safe_get(salary, "deduction_details", {})
     deductions_normalized = []
     libranzas_ocr = []
     embargos_ocr = []
+    descuentos_ley = []
     
     if isinstance(deduction_details, dict):
-        # Formato diccionario: {"salud": 70100, "credito_sudameris": 639854}
         for key, value in deduction_details.items():
             key_upper = key.upper()
-            deductions_normalized.append({
-                "description": key,
-                "amount": safe_float(value)
-            })
+            amount = safe_float(value)
+            deductions_normalized.append({"description": key, "amount": amount})
             
-            # Clasificar
-            if any(k in key_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
-                libranzas_ocr.append({"descripcion": key, "monto": safe_float(value)})
-            if "EMBARGO" in key_upper:
-                embargos_ocr.append({"descripcion": key, "monto": safe_float(value)})
+            # Clasificar por tipo
+            if any(k in key_upper for k in ["SALUD", "PENSION", "FSP", "RETENCION"]):
+                descuentos_ley.append({"descripcion": key, "monto": amount})
+            elif any(k in key_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
+                libranzas_ocr.append({"descripcion": key, "monto": amount})
+            elif "EMBARGO" in key_upper:
+                embargos_ocr.append({"descripcion": key, "monto": amount})
                 
     elif isinstance(deduction_details, list):
-        # Formato lista: [{"description": "SALUD", "amount": 70100}]
         for d in deduction_details:
             if isinstance(d, dict):
                 desc = safe_str(d.get("description"), "")
@@ -367,24 +365,17 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
                 deductions_normalized.append({"description": desc, "amount": amount})
                 
                 desc_upper = desc.upper()
-                if any(k in desc_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
+                if any(k in desc_upper for k in ["SALUD", "PENSION", "FSP", "RETENCION"]):
+                    descuentos_ley.append({"descripcion": desc, "monto": amount})
+                elif any(k in desc_upper for k in ["LIBRANZA", "PRESTAMO", "CREDITO", "BCO", "BANCO"]):
                     libranzas_ocr.append({"descripcion": desc, "monto": amount})
-                if "EMBARGO" in desc_upper:
+                elif "EMBARGO" in desc_upper:
                     embargos_ocr.append({"descripcion": desc, "monto": amount})
-            elif isinstance(d, str):
-                deductions_normalized.append({"description": d, "amount": None})
     
-    # También extraer de credits si existe
-    credits_ocr = safe_get(std, "credits", [])
-    if isinstance(credits_ocr, list):
-        for c in credits_ocr:
-            if isinstance(c, dict):
-                entidad = safe_str(c.get("entidad"), "")
-                valor = safe_float(c.get("valor"))
-                if entidad and valor:
-                    libranzas_ocr.append({"descripcion": entidad, "monto": valor})
+    # NO extraer de credits[] para evitar duplicación
+    # credits[] y deduction_details tienen la misma info en formatos distintos
     
-    logger.info(f"  Deductions: {len(deductions_normalized)}, Libranzas OCR: {len(libranzas_ocr)}, Embargos: {len(embargos_ocr)}")
+    logger.info(f"  Deductions: {len(deductions_normalized)}, Libranzas OCR: {len(libranzas_ocr)}, Embargos: {len(embargos_ocr)}, Ley: {len(descuentos_ley)}")
     
     # Tasks procesados
     tasks_processed = []
@@ -402,13 +393,12 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
     logger.info(f"  Tasks: {len(tasks_processed)}")
     logger.info("✓ Data consolidated")
     
-    # Enviar datos COMPLETOS a Claude para que los interprete
     return {
         "txn": txn_id,
         
-        # OCR - Datos completos + resumen procesado
+        # OCR - Datos completos + resumen sin duplicaciones
         "ocr": {
-            "raw": ocr_docs,  # Datos completos de OCR
+            "raw": ocr_docs,
             "resumen": {
                 "personal": personal if isinstance(personal, dict) else {},
                 "pagaduria": pagaduria,
@@ -418,8 +408,9 @@ def consolidate_data(txn_id: str, ocr: list, buro: dict, truora: dict, tasks: li
                     "net": safe_float(safe_get(salary, "net_salary")),
                     "totalDeductions": safe_float(safe_get(salary, "total_deductions"))
                 },
-                "deductions": deductions_normalized,
-                "libranzasIdentificadas": libranzas_ocr,
+                "todasDeducciones": deductions_normalized,
+                "descuentosLey": descuentos_ley,
+                "descuentosLibranza": libranzas_ocr,
                 "embargos": embargos_ocr,
                 "cantidadEmbargos": len(embargos_ocr)
             }
@@ -500,7 +491,7 @@ def verify_api_key(api_key: str = Depends(api_key_header)) -> str:
 # FASTAPI APP
 # =============================================================================
 
-app = FastAPI(title="KALA Credit Validation", version="1.3.0")
+app = FastAPI(title="KALA Credit Validation", version="1.3.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 kala_client = KalaAPIClient()
@@ -510,7 +501,7 @@ kala_client = KalaAPIClient()
 def root():
     return {
         "message": "KALA Credit Validation API", 
-        "version": "1.3.0", 
+        "version": "1.3.1", 
         "prompt_version": PROMPT_VERSION
     }
 
@@ -522,7 +513,7 @@ def health_check():
     
     return HealthResponse(
         status="healthy" if engine else "degraded",
-        version="1.3.0",
+        version="1.3.1",
         prompt_version=PROMPT_VERSION,
         database="configured" if engine else "NOT configured",
         database_url_format=db_format,
@@ -558,7 +549,7 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
         consolidated = consolidate_data(txn_id, data["ocr"], data["buro"], data["truora"], data["tasks"])
         
         if audit:
-            audit.consolidated_prompt = json.dumps(consolidated, ensure_ascii=False)[:10000]  # Truncate if too long
+            audit.consolidated_prompt = json.dumps(consolidated, ensure_ascii=False)[:10000]
         
         if not ANTHROPIC_API_KEY:
             raise HTTPException(status_code=500, detail="Claude API not configured")
@@ -591,6 +582,7 @@ def validate_credit(request: ValidationRequest, api_key: str = Depends(verify_ap
         if audit and db:
             audit.latency_total_ms = total_ms
             audit.status = "SUCCESS"
+            audit.claude_retries = metrics.get("retries", 0)
             db.add(audit)
             db.commit()
             db.refresh(audit)
@@ -642,7 +634,6 @@ def get_audit(transaction_id: str, api_key: str = Depends(verify_api_key)):
 
 @app.get("/api/v1/audit/detail/{audit_id}")
 def get_audit_detail(audit_id: int, api_key: str = Depends(verify_api_key)):
-    """Obtiene el detalle completo de un audit incluyendo inputs y outputs."""
     if not SessionLocal:
         raise HTTPException(status_code=500, detail="Database not configured")
     db = SessionLocal()
@@ -680,7 +671,6 @@ def get_audit_detail(audit_id: int, api_key: str = Depends(verify_api_key)):
 
 @app.get("/api/v1/prompt-version")
 def get_prompt_version():
-    """Retorna la versión actual del prompt."""
     return {"prompt_version": PROMPT_VERSION, "model": CLAUDE_MODEL}
 
 
