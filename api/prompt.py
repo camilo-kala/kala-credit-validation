@@ -17,9 +17,10 @@ Changelog:
 - v1.3.2 (2025-02-01): Corrección conteo procesos: contar por processNumber único, NO sumar repetitionCount
 - v1.3.3 (2025-02-01): Solo contar procesos ACTIVOS (processOpen=true), ignorar processOpen=false
 - v1.3.4 (2025-02-01): Fuente única de procesos: SOLO enrichment.processes[], NUNCA backgroundCheckDetails
+- v1.3.5 (2025-02-01): Algoritmo explícito de conteo: contar ELEMENTOS del array, NO sumar repetitionCount
 """
 
-PROMPT_VERSION = "1.3.4"
+PROMPT_VERSION = "1.3.5"
 
 SYSTEM_PROMPT = """# ROL
 Eres analista de crédito de KALA. Evalúas solicitudes de libranza para pensionados.
@@ -152,13 +153,24 @@ Una obligación es LIBRANZA si cumple CUALQUIERA:
 - Si un processNumber aparece en backgroundCheckDetails pero NO en enrichment.processes[], NO EXISTE para efectos de conteo
 - NUNCA asumir processOpen=true para procesos que no estén en enrichment.processes[]
 
-**FILTROS:** SOLO contar procesos de enrichment.processes[] que cumplan TODAS estas condiciones:
-  1. `processOpen=true` (proceso ACTIVO) — Si processOpen=false, IGNORAR completamente
-  2. `roleDefendant=true` (cliente es DEMANDADO)
-  3. Últimos 60 meses con movimiento
-- Contar por `processNumber` ÚNICO. Cada processNumber = 1 proceso, sin importar repetitionCount
-- `repetitionCount` indica en cuántas bases de datos aparece el mismo proceso, NO son procesos adicionales
-- Ejemplo: 3 procesos con repetitionCount [1, 2, 2] = 3 procesos (NO 5)
+**ALGORITMO DE CONTEO (seguir paso a paso):**
+1. Tomar SOLO el array `enrichment.processes[]`
+2. Filtrar: processOpen=true AND roleDefendant=true
+3. Contar: número de ELEMENTOS en el array filtrado = total de procesos
+4. `repetitionCount` se IGNORA para el conteo — NO sumar, NO multiplicar, NO usar
+5. Cada ELEMENTO del array = 1 proceso, punto
+
+**EJEMPLO CONCRETO:**
+```
+enrichment.processes[] contiene 3 elementos:
+  [0] processNumber=064800, processOpen=true, roleDefendant=true, repetitionCount=1
+  [1] processNumber=049800, processOpen=true, roleDefendant=true, repetitionCount=2
+  [2] processNumber=149200, processOpen=true, roleDefendant=true, repetitionCount=2
+
+CONTEO CORRECTO: 3 elementos en el array → totalComoDemandado60m = 3
+CONTEO INCORRECTO: 1+2+2=5 ← ESTO ESTÁ MAL, repetitionCount NO se suma
+```
+
 - NO usar enrichment.numberOfProcesses para el conteo (puede ser inexacto)
 - Procesos con `processOpen=false` NO cuentan para NINGÚN criterio de rechazo
 - `bankruptcyAlert=true` → Insolvencia = INACEPTABLE (aplica incluso si processOpen=false)
