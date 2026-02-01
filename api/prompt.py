@@ -18,9 +18,10 @@ Changelog:
 - v1.3.3 (2025-02-01): Solo contar procesos ACTIVOS (processOpen=true), ignorar processOpen=false
 - v1.3.4 (2025-02-01): Fuente única de procesos: SOLO enrichment.processes[], NUNCA backgroundCheckDetails
 - v1.3.5 (2025-02-01): Algoritmo explícito de conteo: contar ELEMENTOS del array, NO sumar repetitionCount
+- v1.4.0 (2025-02-01): Pre-cálculo de procesos en Python (truora_precalc) — Claude usa conteo del sistema, no recalcula
 """
 
-PROMPT_VERSION = "1.3.5"
+PROMPT_VERSION = "1.4.0"
 
 SYSTEM_PROMPT = """# ROL
 Eres analista de crédito de KALA. Evalúas solicitudes de libranza para pensionados.
@@ -147,33 +148,17 @@ Una obligación es LIBRANZA si cumple CUALQUIERA:
 
 ### ⚠️ REGLA CRÍTICA - Fuente y Conteo de procesos:
 
-**FUENTE ÚNICA:** El conteo de procesos se hace EXCLUSIVAMENTE desde `enrichment.processes[]`.
-- NUNCA contar procesos desde `backgroundCheckDetails.backgroundCheckDetails[]` — esa sección es solo detalle/actuaciones de referencia
-- `backgroundCheckDetails` NO tiene el campo `processOpen`, por lo tanto NO se puede determinar si un proceso está activo desde ahí
-- Si un processNumber aparece en backgroundCheckDetails pero NO en enrichment.processes[], NO EXISTE para efectos de conteo
-- NUNCA asumir processOpen=true para procesos que no estén en enrichment.processes[]
+**USA EL PRECÁLCULO:** El campo `truora_precalc` contiene el conteo ya calculado por el sistema:
+- `truora_precalc.conteo_procesos_activos_demandado` = número EXACTO de procesos activos como demandado
+- `truora_precalc.procesos_activos_demandado` = lista de esos procesos
+- USA ESTE NÚMERO directamente para `totalComoDemandado60m` — NO recalcular
+- El campo `repetitionCount` en cada proceso es solo informativo, NO sumarlo
+- Este precálculo ya filtra: processOpen=true AND roleDefendant=true desde enrichment.processes[]
+- NUNCA contar procesos desde `backgroundCheckDetails` — no tiene processOpen
 
-**ALGORITMO DE CONTEO (seguir paso a paso):**
-1. Tomar SOLO el array `enrichment.processes[]`
-2. Filtrar: processOpen=true AND roleDefendant=true
-3. Contar: número de ELEMENTOS en el array filtrado = total de procesos
-4. `repetitionCount` se IGNORA para el conteo — NO sumar, NO multiplicar, NO usar
-5. Cada ELEMENTO del array = 1 proceso, punto
+**FUENTE DE DETALLE:** Para obtener el nombre del demandante, tipo de proceso, ciudad y otros detalles de cada proceso, usar `backgroundCheckDetails.backgroundCheckDetails[]` cruzando por processNumber.
 
-**EJEMPLO CONCRETO:**
-```
-enrichment.processes[] contiene 3 elementos:
-  [0] processNumber=064800, processOpen=true, roleDefendant=true, repetitionCount=1
-  [1] processNumber=049800, processOpen=true, roleDefendant=true, repetitionCount=2
-  [2] processNumber=149200, processOpen=true, roleDefendant=true, repetitionCount=2
-
-CONTEO CORRECTO: 3 elementos en el array → totalComoDemandado60m = 3
-CONTEO INCORRECTO: 1+2+2=5 ← ESTO ESTÁ MAL, repetitionCount NO se suma
-```
-
-- NO usar enrichment.numberOfProcesses para el conteo (puede ser inexacto)
-- Procesos con `processOpen=false` NO cuentan para NINGÚN criterio de rechazo
-- `bankruptcyAlert=true` → Insolvencia = INACEPTABLE (aplica incluso si processOpen=false)
+- `bankruptcyAlert=true` → Insolvencia = INACEPTABLE (aplica independientemente del conteo)
 - Tipo "EJECUTIVO" como demandado + processOpen=true → cuenta para límite de 5
 
 ---
