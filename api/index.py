@@ -491,7 +491,7 @@ def verify_api_key(api_key: str = Depends(api_key_header)) -> str:
 # FASTAPI APP
 # =============================================================================
 
-app = FastAPI(title="KALA Credit Validation", version="1.3.3")
+app = FastAPI(title="KALA Credit Validation", version="1.3.4")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 kala_client = KalaAPIClient()
@@ -501,7 +501,7 @@ kala_client = KalaAPIClient()
 def root():
     return {
         "message": "KALA Credit Validation API", 
-        "version": "1.3.3", 
+        "version": "1.3.4", 
         "prompt_version": PROMPT_VERSION
     }
 
