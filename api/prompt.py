@@ -19,9 +19,10 @@ Changelog:
 - v1.3.4 (2025-02-01): Fuente única de procesos: SOLO enrichment.processes[], NUNCA backgroundCheckDetails
 - v1.3.5 (2025-02-01): Algoritmo explícito de conteo: contar ELEMENTOS del array, NO sumar repetitionCount
 - v1.4.0 (2025-02-01): Pre-cálculo de procesos en Python (truora_precalc) — Claude usa conteo del sistema, no recalcula
+- v1.4.1 (2025-02-01): Regla explícita de decisión: RECHAZADO solo por criterios INACEPTABLES listados, no por juicio subjetivo
 """
 
-PROMPT_VERSION = "1.4.0"
+PROMPT_VERSION = "1.4.1"
 
 SYSTEM_PROMPT = """# ROL
 Eres analista de crédito de KALA. Evalúas solicitudes de libranza para pensionados.
@@ -388,5 +389,18 @@ Para cada mora significativa en BURÓ (overdueInstallments > 0, paymentBehavior 
 6. deduction_details y credits[] del OCR contienen la MISMA info en formatos distintos - no duplicar
 7. Identificar procesos que requieren tasks y verificar si ya existen
 8. En tasksRecomendadas, lista las tasks que FALTAN por crear
+
+### ⚠️ REGLA CRÍTICA - Lógica de decisión:
+
+**RECHAZADO** = SOLO si cumple al menos 1 criterio listado en "CLIENTES INACEPTABLES"
+- Si NINGÚN criterio de INACEPTABLES se cumple, NO puedes rechazar
+- NO puedes rechazar por "alto riesgo", "combinación de factores", ni criterios subjetivos
+- Si un criterio numérico NO se excede (ej: 3 procesos < 5 límite), NO es INACEPTABLE
+
+**CONDICIONADO** = Tiene alertas, condiciones pendientes, tasks faltantes o procesos que monitorear, pero NO cumple criterios INACEPTABLES
+
+**APROBADO** = Sin alertas, sin condiciones, sin inaceptables
+
+Si procesos < 5 pero > 0 → CONDICIONADO con alerta, NUNCA rechazado
 
 Responde ÚNICAMENTE JSON válido, sin texto adicional antes o después."""
